@@ -16,6 +16,69 @@ Load cleaning setup and project packages. Raw data lives in `data_raw/`; we use 
 source(here::here("data_cleaning.R"))
 ```
 
+## Load everything and check metadata
+
+### 1.1 Load libraries
+
+```{r load-libs}
+library(terra)
+library(sf)
+library(exactextractr)
+library(sfdep)
+library(dplyr)
+library(tidyr)
+library(tmap)
+library(here)
+```
+
+### 1.2 Read datasets
+
+- E-OBS TG NetCDF (daily)
+- E-OBS RR NetCDF (daily)
+- SPAM crop GeoTIFF(s)
+- Admin boundaries (gpkg/shp)
+
+```{r read-datasets}
+# E-OBS temperature (TG) and precipitation (RR)
+tg <- rast(here("data_raw/eobs/tg_ens_mean_0.1deg_reg_2011-2022_v27.0e.nc"))
+rr <- rast(here("data_raw/eobs/rr_ens_mean_0.1deg_reg_2011-2022_v27.0e.nc"))
+
+# Admin boundaries
+admin <- st_read(here("data_raw/admin/rr_ens_mean_0.1deg_reg_2011-2022_v27.0e.gpkg"), quiet = TRUE)
+
+# SPAM crop data (adjust path/pattern as needed)
+# spam_files <- list.files(here("data_raw/spam"), pattern = "\\.tif$", full.names = TRUE)
+# spam <- rast(spam_files)  # or read individual files
+```
+
+### 1.3 Inspect CRS + resolution + time dimension
+
+```{r inspect-metadata}
+# E-OBS TG
+cat("=== E-OBS TG (Temperature) ===\n")
+cat("CRS:", crs(tg), "\n")
+cat("Resolution:", paste(res(tg), collapse = " x "), "degrees\n")
+cat("Layers (time steps):", nlyr(tg), "\n")
+cat("Extent:", paste(ext(tg)[], collapse = ", "), "\n\n")
+
+# E-OBS RR
+cat("=== E-OBS RR (Precipitation) ===\n")
+cat("CRS:", crs(rr), "\n")
+cat("Resolution:", paste(res(rr), collapse = " x "), "degrees\n")
+cat("Layers (time steps):", nlyr(rr), "\n")
+cat("Extent:", paste(ext(rr)[], collapse = ", "), "\n\n")
+
+# Admin boundaries
+cat("=== Admin boundaries ===\n")
+cat("CRS:", st_crs(admin)$input, "\n")
+cat("Features:", nrow(admin), "\n")
+cat("Extent:", paste(st_bbox(admin), collapse = ", "), "\n")
+```
+
+**What this answers:** "Do my inputs align technically?"
+
+**Output:** a short "data QA" note in your report.
+
 ## NUTS boundaries (data_raw)
 
 Read the NUTS regions from GISCO: **NUTS_RG_20M_2024_3035.gpkg** (polygons, 1:20M, EPSG:3035).
