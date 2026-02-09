@@ -4,6 +4,8 @@
 .Ruserdata
 *.Rproj
 
+README_files
+
 # renv: use lockfile, ignore library (reinstall from lock)
 renv/library/
 renv/local/
