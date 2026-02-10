@@ -6,7 +6,7 @@ library(sf)
 library(dplyr)
 
 # Raw data paths
-path_nuts_gpkg <- here("data_raw", "NUTS_RG_20M_2024_3035.gpkg")
+path_nuts_gpkg <- here("data_raw", "admin", "NUTS_RG_20M_2024_3035.gpkg")
 
 # Load NUTS from data_raw (EPSG:3035, 1:20M)
 read_nuts_raw <- function(path = path_nuts_gpkg) {

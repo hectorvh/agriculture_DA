@@ -16,7 +16,7 @@ Load cleaning setup and project packages. Raw data lives in `data_raw/`; we use 
 source(here::here("data_cleaning.R"))
 ```
 
-## Load everything and check metadata
+## Step 1 — Load everything and check metadata
 
 ### 1.1 Load libraries
 
@@ -44,7 +44,7 @@ tg <- rast(here("data_raw/eobs/tg_ens_mean_0.1deg_reg_2011-2022_v27.0e.nc"))
 rr <- rast(here("data_raw/eobs/rr_ens_mean_0.1deg_reg_2011-2022_v27.0e.nc"))
 
 # Admin boundaries
-admin <- st_read(here("data_raw/admin/rr_ens_mean_0.1deg_reg_2011-2022_v27.0e.gpkg"), quiet = TRUE)
+admin <- st_read(here("data_raw/admin/NUTS_RG_20M_2024_3035.gpkg"), quiet = TRUE)
 
 # SPAM crop data (adjust path/pattern as needed)
 # spam_files <- list.files(here("data_raw/spam"), pattern = "\\.tif$", full.names = TRUE)
@@ -54,30 +54,161 @@ admin <- st_read(here("data_raw/admin/rr_ens_mean_0.1deg_reg_2011-2022_v27.0e.gp
 ### 1.3 Inspect CRS + resolution + time dimension
 
 ```{r inspect-metadata}
-# E-OBS TG
-cat("=== E-OBS TG (Temperature) ===\n")
-cat("CRS:", crs(tg), "\n")
-cat("Resolution:", paste(res(tg), collapse = " x "), "degrees\n")
-cat("Layers (time steps):", nlyr(tg), "\n")
-cat("Extent:", paste(ext(tg)[], collapse = ", "), "\n\n")
-
-# E-OBS RR
-cat("=== E-OBS RR (Precipitation) ===\n")
-cat("CRS:", crs(rr), "\n")
-cat("Resolution:", paste(res(rr), collapse = " x "), "degrees\n")
-cat("Layers (time steps):", nlyr(rr), "\n")
-cat("Extent:", paste(ext(rr)[], collapse = ", "), "\n\n")
-
-# Admin boundaries
-cat("=== Admin boundaries ===\n")
-cat("CRS:", st_crs(admin)$input, "\n")
-cat("Features:", nrow(admin), "\n")
-cat("Extent:", paste(st_bbox(admin), collapse = ", "), "\n")
+crs(tg); res(tg); nlyr(tg)
+crs(rr); res(rr); nlyr(rr)
+st_crs(admin)
 ```
 
 **What this answers:** "Do my inputs align technically?"
 
 **Output:** a short "data QA" note in your report.
+
+## Step 2 — Harmonize study area (DE–BE–NL) + fix geometries
+
+### 2.1 Filter Admin polygons to DE/BE/NL
+
+(Your attribute names differ; adjust `CNTR_CODE` / `ISO` / etc.)
+
+```{r filter-debenl}
+admin_debenl<- admin%>%
+  filter(CNTR_CODE%in%c("DE","BE","NL"))
+```
+
+### 2.2 Fix geometry + create mask
+
+```{r fix-geometry-mask}
+admin_debenl<- st_make_valid(admin_debenl)
+mask_union_4326<- st_union(st_transform(admin_debenl,4326))
+mask_v<- vect(mask_union_4326)
+```
+
+## Step 3 — Clip E-OBS rasters to DE–BE–NL
+
+```{r clip-eobs}
+tg_clip<- mask(crop(tg, mask_v), mask_v)
+rr_clip<- mask(crop(rr, mask_v), mask_v)
+```
+
+**Outputs saved:**
+
+```{r save-clipped-rasters}
+dir.create(here("data_proc", "rasters"), showWarnings = FALSE, recursive = TRUE)
+writeRaster(tg_clip, here("data_proc/rasters/tg_debenl.tif"), overwrite=TRUE)
+writeRaster(rr_clip, here("data_proc/rasters/rr_debenl.tif"), overwrite=TRUE)
+```
+
+## Step 4 — Select the time window (April–May)
+
+E-OBS NetCDF usually has a time index. Two robust approaches:
+
+### 4.1 If time labels exist (best)
+
+```{r check-time}
+time(tg_clip)  # check if terra shows dates
+```
+
+If dates exist, filter by month:
+
+```{r filter-april-may}
+dates<- as.Date(time(tg_clip))
+sel<- which(format(dates,"%m")%in%c("04","05"))
+
+tg_am<- tg_clip[[sel]]
+rr_am<- rr_clip[[sel]]
+```
+
+## Step 5 — Compute daily suitability (PSI) from E-OBS
+
+Define rules (example you already had):
+
+- temp suitable: 12–25°C
+- rain suitable: RR < 1 mm/day
+
+### 5.1 Binary suitability per day
+
+```{r psi-daily}
+temp_ok<- tg_am>=12& tg_am<=25
+rain_ok<- rr_am<1
+
+psi_daily<- temp_ok* rain_ok  # 1 if both true else 0
+```
+
+### 5.2 Save daily PSI (optional but nice)
+
+```{r save-psi-daily}
+writeRaster(psi_daily, here("data_proc/rasters/psi_daily.tif"), overwrite=TRUE)
+```
+
+**Outputs you'll later summarize:** mean, count, variability.
+
+## Step 6 — Temporal summaries (this is the "spatio-temporal" core)
+
+You should compute at least these 3:
+
+### 6.1 Mean suitability (fraction of suitable days)
+
+```{r psi-mean}
+psi_mean<- app(psi_daily, mean, na.rm=TRUE)  # 0–1
+```
+
+### 6.2 Number of suitable days
+
+```{r psi-days}
+psi_days<- app(psi_daily,sum, na.rm=TRUE)  # count of days
+```
+
+### 6.3 Variability / instability (SD)
+
+```{r psi-sd}
+psi_sd<- app(psi_daily, sd, na.rm=TRUE)
+```
+
+Save them:
+
+```{r save-psi-summaries}
+writeRaster(psi_mean, here("data_proc/rasters/psi_mean_am.tif"), overwrite=TRUE)
+writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
+writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
+```
+
+```{r check}
+# Are rasters empty?
+global(psi_mean_am, "mean", na.rm=TRUE)
+global(psi_days_am, "max", na.rm=TRUE)
+
+# Value ranges
+global(tg_debenl, range, na.rm=TRUE)
+global(rr_debenl, range, na.rm=TRUE)
+
+# PSI logic check
+unique(values(psi_daily)[!is.na(values(psi_daily))])
+```
+
+## Step 7 — Bring SPAM 2020 crop data into the same grid
+
+This is where SPAM shines: it's already ~10 km, but it may still differ from E-OBS grid.
+
+### 7.1 Load SPAM crop raster (example: harvested area for rapeseed)
+
+```{r spam-load}
+spam_rape_ha<- rast(here("data_raw/spam/spam2020_V2r0_global_H_RAPE_A.tif"))
+```
+
+### 7.2 Reproject/resample SPAM to E-OBS template
+
+Use `psi_mean` as the template because it's exactly your analysis grid.
+
+- If SPAM is continuous (ha, production): use `"bilinear"` or `"average"` style resampling.
+
+```{r spam-project}
+spam_rape_ha_eobs<- project(spam_rape_ha, psi_mean, method="bilinear")
+```
+
+Save:
+
+```{r spam-save}
+writeRaster(spam_rape_ha_eobs, here("data_proc/rasters/spam_rape_ha_eobs.tif"), overwrite=TRUE)
+```
 
 ## NUTS boundaries (data_raw)
 
