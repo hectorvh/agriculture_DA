@@ -16,6 +16,17 @@ Load cleaning setup and project packages. Raw data lives in `data_raw/`; we use 
 source(here::here("data_cleaning.R"))
 ```
 
+```{r check-terra}
+Sys.setenv(PROJ_LIB = system.file("proj", package = "terra"))
+
+library(terra)
+```
+
+```{r check-proj}
+system.file("proj", package = "terra")
+# should be something like ".../R/win-library/4.5/terra/proj"
+```
+
 ## Step 1 — Load everything and check metadata
 
 ### 1.1 Load libraries
@@ -223,6 +234,46 @@ Save:
 
 ```{r spam-save}
 writeRaster(spam_rape_ha_eobs, here("data_proc/rasters/spam_rape_ha_eobs.tif"), overwrite=TRUE)
+```
+
+## Step 8 — Convert SPAM “harvested area” to a crop fraction/intensity (optional but strong)
+
+### 8.1 Compute cell area (ha) for the E-OBS grid
+
+```{r cell-area}
+cell_area_m2<- cellSize(psi_mean, unit="m")  # raster of m²
+cell_area_ha<- cell_area_m2/10000
+```
+
+### 8.2 Crop fraction (0–1-ish, can exceed 1 in rare edge cases; clamp)
+
+```{r rape-fraction}
+rape_frac<- spam_rape_ha_eobs/ cell_area_ha
+rape_frac<- clamp(rape_frac,0,1)
+writeRaster(rape_frac, here("data_proc/rasters/rape_fraction.tif"), overwrite=TRUE)
+```
+
+## Step 9 — Compute crop-weighted suitability and crop-weighted risk
+
+You want metrics that combine climate + crop exposure.
+
+### 9.1 Crop-weighted suitability
+
+```{r rape-suitability-weighted}
+rape_suit<- psi_mean* rape_frac
+writeRaster(rape_suit, here("data_proc/rasters/rape_suitability_weighted.tif"), overwrite=TRUE)
+```
+
+### 9.2 Crop-weighted “bad days” (exposure to unsuitable days)
+
+First define “bad day” = PSI == 0:
+
+```{r rape-bad-exposure}
+bad_daily<- 1- psi_daily
+bad_days<- app(bad_daily,sum, na.rm=TRUE)  # count of bad days
+
+rape_bad_exposure<- bad_days* rape_frac
+writeRaster(rape_bad_exposure, here("data_proc/rasters/rape_bad_exposure.tif"), overwrite=TRUE)
 ```
 
 ## NUTS boundaries (data_raw)
