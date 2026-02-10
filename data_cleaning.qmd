@@ -276,6 +276,43 @@ rape_bad_exposure<- bad_days* rape_frac
 writeRaster(rape_bad_exposure, here("data_proc/rasters/rape_bad_exposure.tif"), overwrite=TRUE)
 ```
 
+## Step 10 — Aggregate rasters to Admin regions
+
+
+### 10.1 Prep admin polygons in same CRS as rasters
+
+```{r admin-4326}
+admin_4326<- st_transform(admin_debenl, crs(psi_mean))
+```
+
+### 10.2 Zonal stats with exactextractr
+
+```{r admin-stats}
+admin_stats<- admin_4326%>%
+  mutate(
+    psi_mean = exact_extract(psi_mean,           ., "mean"),
+    psi_days = exact_extract(psi_days,           ., "mean"),
+    psi_sd   = exact_extract(psi_sd,             ., "mean"),
+    rape_frac= exact_extract(rape_frac,          ., "mean"),
+    rape_suit= exact_extract(rape_suit,          ., "mean"),
+    rape_bad = exact_extract(rape_bad_exposure,  ., "mean")
+  )
+```
+
+Save table:
+
+```{r admin-stats-save}
+write.csv(
+  st_drop_geometry(admin_stats),
+  here("data_proc/tables/admin_pollination_stats.csv"),
+  row.names = FALSE
+)
+```
+
+**Outputs:**
+
+- A clean regional dataset to map + analyze + rank.
+
 ## NUTS boundaries (data_raw)
 
 Read the NUTS regions from GISCO: **NUTS_RG_20M_2024_3035.gpkg** (polygons, 1:20M, EPSG:3035).
