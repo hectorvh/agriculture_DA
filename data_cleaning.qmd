@@ -171,6 +171,17 @@ writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
 writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
 ```
 
+```{r check-rasters}
+library(terra)
+
+psi_mean_am <- rast(here("data_proc/rasters/psi_mean_am.tif"))
+psi_days_am <- rast(here("data_proc/rasters/psi_days_am.tif"))
+psi_sd_am   <- rast(here("data_proc/rasters/psi_sd_am.tif"))
+tg_debenl   <- rast(here("data_proc/rasters/tg_debenl.tif"))
+rr_debenl   <- rast(here("data_proc/rasters/rr_debenl.tif"))
+psi_daily   <- rast(here("data_proc/rasters/psi_daily.tif"))   # if you saved it too
+```
+
 ```{r check}
 # Are rasters empty?
 global(psi_mean_am, "mean", na.rm=TRUE)
@@ -194,14 +205,18 @@ This is where SPAM shines: it's already ~10 km, but it may still differ from E-O
 spam_rape_ha<- rast(here("data_raw/spam/spam2020_V2r0_global_H_RAPE_A.tif"))
 ```
 
-### 7.2 Reproject/resample SPAM to E-OBS template
+### 7.2 Normalize CRS and resample SPAM to E-OBS template
 
 Use `psi_mean` as the template because it's exactly your analysis grid.
 
+- Here we **force both rasters to EPSG:4326** and then use `resample()`. This avoids PROJ/GDAL transformation issues.
 - If SPAM is continuous (ha, production): use `"bilinear"` or `"average"` style resampling.
 
 ```{r spam-project}
-spam_rape_ha_eobs<- project(spam_rape_ha, psi_mean, method="bilinear")
+crs(spam_rape_ha)<- "EPSG:4326"
+crs(psi_mean)    <- "EPSG:4326"
+
+spam_rape_ha_eobs<- resample(spam_rape_ha, psi_mean, method="bilinear")
 ```
 
 Save:
