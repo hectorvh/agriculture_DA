@@ -313,6 +313,93 @@ write.csv(
 
 - A clean regional dataset to map + analyze + rank.
 
+## Step 11 — Spatial weights + Global Moran’s I + LISA (region level)
+
+### 11.1 Prepare neighbors (queen contiguity)
+
+```{r moran-neighbors}
+admin_stats_3035<- st_transform(admin_stats, 3035)
+
+nb<- st_contiguity(admin_stats_3035)      # neighbors (queen contiguity)
+lw<- st_weights(nb, style="W")           # row-standardized weights
+```
+
+### 11.2 Global Moran’s I (example on rape_suit)
+```{r}
+summary(admin_stats_3035$rape_suit)
+table(is.finite(admin_stats_3035$rape_suit))
+which(!is.finite(admin_stats_3035$rape_suit))[1:20]  # first few indices
+```
+```{r global-moran}
+# Drop regions with non-finite rape_suit; rebuild neighbors/weights on subset (keeps Moran's I well-defined)
+admin_ok <- admin_stats_3035 %>% dplyr::filter(is.finite(rape_suit))
+nb_ok    <- st_contiguity(admin_ok)
+lw_ok    <- st_weights(nb_ok, style = "W")
+
+# 3) Run Global Moran’s I
+global_m <- global_moran(admin_ok$rape_suit, nb_ok, lw_ok)
+global_m
+
+```
+
+### 11.3 Local Moran’s I (LISA)
+
+```{r local-moran}
+library(dplyr)
+library(sfdep)
+
+# 0) Create a stable ID (do this ONCE)
+admin_stats_3035 <- admin_stats_3035 %>%
+  mutate(region_id = row_number())
+
+# 1) Keep only finite values
+admin_ok <- admin_stats_3035 %>%
+  filter(is.finite(rape_suit))
+
+# 2) Rebuild neighbors/weights
+nb_ok <- st_contiguity(admin_ok)
+lw_ok <- st_weights(nb_ok, style = "W")
+
+# 3) LISA
+lisa_ok <- local_moran(admin_ok$rape_suit, nb_ok, lw_ok)
+
+# 4) Cluster classification (High-High, Low-Low, etc.); spdep::hotspot uses Prname = p-value column
+lisa_cl <- spdep::hotspot(lisa_ok, Prname = "p_ii")
+
+# 5) Attach results to the filtered dataset
+admin_ok <- admin_ok %>%
+  mutate(
+    lisa_i  = lisa_ok$ii,
+    lisa_p  = lisa_ok$p_ii,
+    lisa_cl = lisa_cl
+  )
+
+
+```
+
+```{r}
+# 5) Join back using region_id  (finish this block)
+admin_stats_3035 <- admin_stats_3035 %>%
+  left_join(
+    admin_ok %>% 
+      st_drop_geometry() %>%
+      select(region_id, lisa_i, lisa_p, lisa_cl),
+    by = "region_id"
+  )
+
+```
+
+
+Save:
+
+```{r lisa-save}
+st_write(
+  admin_stats_3035,
+  here("data_proc/vectors/admin_stats_lisa.gpkg"),
+  delete_dsn = TRUE
+)
+```
+
 ## NUTS boundaries (data_raw)
 
 Read the NUTS regions from GISCO: **NUTS_RG_20M_2024_3035.gpkg** (polygons, 1:20M, EPSG:3035).
