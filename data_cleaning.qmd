@@ -195,12 +195,12 @@ psi_daily   <- rast(here("data_proc/rasters/psi_daily.tif"))   # if you saved it
 
 ```{r check}
 # Are rasters empty?
-global(psi_mean_am, "mean", na.rm=TRUE)
-global(psi_days_am, "max", na.rm=TRUE)
+#global(psi_mean_am, "mean", na.rm=TRUE)
+#global(psi_days_am, "max", na.rm=TRUE)
 
 # Value ranges
-global(tg_debenl, range, na.rm=TRUE)
-global(rr_debenl, range, na.rm=TRUE)
+#global(tg_debenl, range, na.rm=TRUE)
+#global(rr_debenl, range, na.rm=TRUE)
 
 # PSI logic check
 unique(values(psi_daily)[!is.na(values(psi_daily))])
@@ -331,14 +331,35 @@ table(is.finite(admin_stats_3035$rape_suit))
 which(!is.finite(admin_stats_3035$rape_suit))[1:20]  # first few indices
 ```
 ```{r global-moran}
-# Drop regions with non-finite rape_suit; rebuild neighbors/weights on subset (keeps Moran's I well-defined)
-admin_ok <- admin_stats_3035 %>% dplyr::filter(is.finite(rape_suit))
-nb_ok    <- st_contiguity(admin_ok)
-lw_ok    <- st_weights(nb_ok, style = "W")
+library(dplyr)
+library(sfdep)
 
-# 3) Run Global Moran’s I
+# 1) Keep only regions with valid values
+admin_ok <- admin_stats_3035 %>%
+  filter(!is.na(rape_suit), is.finite(rape_suit))
+
+# report how many were removed
+cat("Rows total:", nrow(admin_stats_3035),
+    " | used:", nrow(admin_ok),
+    " | removed:", nrow(admin_stats_3035) - nrow(admin_ok), "\n")
+
+# 2) Build neighbors + weights (queen contiguity)
+nb_ok <- st_contiguity(admin_ok)
+zero_nbr <- lengths(nb_ok) == 0
+if (any(zero_nbr)) {
+  cat("Dropping isolated regions (0 neighbors):", sum(zero_nbr), "\n")
+  admin_ok <- admin_ok[!zero_nbr, ]
+  nb_ok <- st_contiguity(admin_ok)
+}
+lw_ok <- st_weights(nb_ok, style = "W")
+
+# 3) Global Moran's I (sfdep versions without allow_zero argument)
 global_m <- global_moran(admin_ok$rape_suit, nb_ok, lw_ok)
 global_m
+
+# (optional) permutation-based p-value (stronger for reporting)
+global_mc <- global_moran_perm(admin_ok$rape_suit, nb_ok, lw_ok, nsim = 999)
+global_mc
 
 ```
 
@@ -358,35 +379,69 @@ admin_ok <- admin_stats_3035 %>%
 
 # 2) Rebuild neighbors/weights
 nb_ok <- st_contiguity(admin_ok)
+zero_nbr_lisa <- lengths(nb_ok) == 0
+if (any(zero_nbr_lisa)) {
+  cat("Dropping isolated regions for LISA:", sum(zero_nbr_lisa), "\n")
+  admin_ok <- admin_ok[!zero_nbr_lisa, ]
+  nb_ok <- st_contiguity(admin_ok)
+}
 lw_ok <- st_weights(nb_ok, style = "W")
 
 # 3) LISA
 lisa_ok <- local_moran(admin_ok$rape_suit, nb_ok, lw_ok)
 
-# 4) Cluster classification (High-High, Low-Low, etc.); spdep::hotspot uses Prname = p-value column
-lisa_cl <- spdep::hotspot(lisa_ok, Prname = "p_ii")
-
-# 5) Attach results to the filtered dataset
+# 4) Attach results (robust across sfdep output variants)
 admin_ok <- admin_ok %>%
+  bind_cols(as_tibble(lisa_ok)) %>%
   mutate(
-    lisa_i  = lisa_ok$ii,
-    lisa_p  = lisa_ok$p_ii,
-    lisa_cl = lisa_cl
+    lisa_i  = ii,
+    lisa_p  = p_ii
   )
+
+if ("mean" %in% names(admin_ok)) {
+  admin_ok <- admin_ok %>% mutate(lisa_cl = as.character(mean))
+} else if ("cluster" %in% names(admin_ok)) {
+  admin_ok <- admin_ok %>% mutate(lisa_cl = as.character(cluster))
+} else {
+  admin_ok <- admin_ok %>% mutate(lisa_cl = NA_character_)
+}
 
 
 ```
 
-```{r}
-# 5) Join back using region_id  (finish this block)
+```{r lisa-join}
+# 5) Join back using region_id
 admin_stats_3035 <- admin_stats_3035 %>%
   left_join(
-    admin_ok %>% 
+    admin_ok %>%
       st_drop_geometry() %>%
       select(region_id, lisa_i, lisa_p, lisa_cl),
     by = "region_id"
   )
+```
 
+Verify the join:
+
+```{r lisa-verify}
+# Should show NAs for regions dropped from admin_ok (non-finite rape_suit) and the rest filled
+table(is.na(admin_stats_3035$lisa_i))
+table(admin_stats_3035$lisa_cl, useNA = "ifany")
+summary(admin_stats_3035$lisa_p)
+```
+
+Create a "significant cluster" label (for mapping):
+
+```{r lisa-sig}
+admin_stats_3035 <- admin_stats_3035 %>%
+  mutate(
+    lisa_sig = case_when(
+      is.na(lisa_p) ~ NA_character_,
+      lisa_p <= 0.05 ~ as.character(lisa_cl),
+      TRUE ~ "Not significant"
+    )
+  )
+
+table(admin_stats_3035$lisa_sig, useNA = "ifany")
 ```
 
 
@@ -398,6 +453,181 @@ st_write(
   here("data_proc/vectors/admin_stats_lisa.gpkg"),
   delete_dsn = TRUE
 )
+```
+
+## Step 12 - Create final deliverables (maps, plots, tables)
+
+### 12.1 Maps (minimum set)
+
+```{r maps-deliverables}
+library(tmap)
+library(here)
+
+dir.create(here("outputs", "maps"), showWarnings = FALSE, recursive = TRUE)
+tmap_mode("plot")
+
+save_map <- function(map_obj, filename) {
+  tmap_save(map_obj, filename = filename, width = 10, height = 7)
+}
+
+map_psi_mean <- tm_shape(psi_mean) +
+  tm_raster(title = "PSI mean") +
+  tm_layout(title = "Mean PSI (Apr-May)", frame = FALSE)
+
+map_psi_days <- tm_shape(psi_days) +
+  tm_raster(title = "Suitable days") +
+  tm_layout(title = "Suitable days count (Apr-May)", frame = FALSE)
+
+map_psi_sd <- tm_shape(psi_sd) +
+  tm_raster(title = "PSI SD") +
+  tm_layout(title = "PSI variability (SD, Apr-May)", frame = FALSE)
+
+map_rape_frac <- tm_shape(rape_frac) +
+  tm_raster(title = "Rape fraction") +
+  tm_layout(title = "Rapeseed fraction/intensity", frame = FALSE)
+
+map_rape_suit <- tm_shape(rape_suit) +
+  tm_raster(title = "Weighted suitability") +
+  tm_layout(title = "Crop-weighted suitability", frame = FALSE)
+
+save_map(map_psi_mean, here("outputs/maps/map_psi_mean.png"))
+save_map(map_psi_days, here("outputs/maps/map_psi_days.png"))
+save_map(map_psi_sd, here("outputs/maps/map_psi_sd.png"))
+save_map(map_rape_frac, here("outputs/maps/map_rape_frac.png"))
+save_map(map_rape_suit, here("outputs/maps/map_rape_suit.png"))
+
+if ("lisa_sig" %in% names(admin_stats_3035)) {
+  map_lisa <- tm_shape(admin_stats_3035) +
+    tm_polygons("lisa_sig", title = "LISA cluster", colorNA = "grey85") +
+    tm_layout(title = "LISA clusters (rape_suit)", frame = FALSE)
+  save_map(map_lisa, here("outputs/maps/map_lisa_clusters.png"))
+}
+
+map_psi_mean
+```
+
+### 12.2 Time series plot per region (region x day)
+
+```{r region-day-timeseries}
+library(dplyr)
+library(tidyr)
+library(exactextractr)
+library(ggplot2)
+library(here)
+
+dir.create(here("outputs", "plots"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
+
+admin_ts <- st_transform(admin_debenl, crs(psi_daily))
+admin_labels <- st_drop_geometry(admin_ts)
+admin_labels$region_id <- seq_len(nrow(admin_labels))
+
+label_candidates <- c("NUTS_ID", "NAME_LATN", "NUTS_NAME", "NAME_ENGL")
+label_col <- label_candidates[label_candidates %in% names(admin_labels)]
+if (length(label_col) > 0) {
+  admin_labels$region_label <- as.character(admin_labels[[label_col[1]]])
+} else {
+  admin_labels$region_label <- paste0("region_", admin_labels$region_id)
+}
+
+daily_wide <- exact_extract(psi_daily, admin_ts, "mean") %>% as_tibble()
+daily_wide$region_id <- seq_len(nrow(daily_wide))
+
+layer_lookup <- tibble(
+  layer = names(psi_daily),
+  layer_index = seq_len(nlyr(psi_daily))
+)
+
+psi_dates <- suppressWarnings(as.Date(time(psi_daily)))
+if (length(psi_dates) != nlyr(psi_daily)) {
+  psi_dates <- rep(as.Date(NA), nlyr(psi_daily))
+}
+if (all(is.na(psi_dates)) && exists("tg_dates") && exists("sel") && length(sel) == nlyr(psi_daily)) {
+  psi_dates <- tg_dates[sel]
+}
+layer_lookup$date <- psi_dates
+
+psi_region_day <- daily_wide %>%
+  pivot_longer(-region_id, names_to = "layer", values_to = "psi_daily_mean") %>%
+  left_join(layer_lookup, by = "layer") %>%
+  left_join(admin_labels %>% select(region_id, region_label), by = "region_id")
+
+write.csv(psi_region_day, here("data_proc/tables/psi_region_day.csv"), row.names = FALSE)
+
+if (!("region_id" %in% names(admin_stats_3035))) {
+  admin_stats_3035 <- admin_stats_3035 %>% mutate(region_id = row_number())
+}
+
+top_regions <- admin_stats_3035 %>%
+  st_drop_geometry() %>%
+  filter(is.finite(rape_bad)) %>%
+  arrange(desc(rape_bad)) %>%
+  slice_head(n = 12) %>%
+  pull(region_id)
+
+plot_df <- psi_region_day %>%
+  filter(region_id %in% top_regions)
+
+if (all(is.na(plot_df$date))) {
+  p_ts <- ggplot(plot_df, aes(x = layer_index, y = psi_daily_mean, color = region_label, group = region_label)) +
+    geom_line(alpha = 0.8) +
+    labs(
+      x = "Day index (Apr-May)",
+      y = "Daily regional mean PSI",
+      title = "Daily PSI by region (top 12 by rape_bad)"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+} else {
+  p_ts <- ggplot(plot_df, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
+    geom_line(alpha = 0.8) +
+    labs(
+      x = "Date",
+      y = "Daily regional mean PSI",
+      title = "Daily PSI by region (top 12 by rape_bad)"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+ggsave(here("outputs/plots/ts_psi_daily_top12_rape_bad.png"), p_ts, width = 10, height = 6, dpi = 300)
+p_ts
+```
+
+### 12.3 Ranking tables (policy relevance)
+
+```{r ranking-tables}
+library(dplyr)
+library(here)
+
+dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
+
+stats_tbl <- read.csv(here("data_proc/tables/admin_pollination_stats.csv"), stringsAsFactors = FALSE)
+id_candidates <- c("NUTS_ID", "NAME_LATN", "CNTR_CODE", "LEVL_CODE")
+id_cols <- id_candidates[id_candidates %in% names(stats_tbl)]
+
+top_rape_bad <- stats_tbl %>%
+  filter(is.finite(rape_bad)) %>%
+  arrange(desc(rape_bad)) %>%
+  slice_head(n = 10)
+
+top_rape_suit <- stats_tbl %>%
+  filter(is.finite(rape_suit)) %>%
+  arrange(desc(rape_suit)) %>%
+  slice_head(n = 10)
+
+top_psi_sd <- stats_tbl %>%
+  filter(is.finite(psi_sd)) %>%
+  arrange(desc(psi_sd)) %>%
+  slice_head(n = 10)
+
+write.csv(top_rape_bad, here("outputs/tables/top10_rape_bad.csv"), row.names = FALSE)
+write.csv(top_rape_suit, here("outputs/tables/top10_rape_suit.csv"), row.names = FALSE)
+write.csv(top_psi_sd, here("outputs/tables/top10_psi_sd.csv"), row.names = FALSE)
+
+top_rape_bad %>% select(any_of(c(id_cols, "rape_bad")))
+top_rape_suit %>% select(any_of(c(id_cols, "rape_suit")))
+top_psi_sd %>% select(any_of(c(id_cols, "psi_sd")))
 ```
 
 ## NUTS boundaries (data_raw)
