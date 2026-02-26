@@ -10,10 +10,23 @@ jupyter: R
 
 ## Setup
 
+Run project setup once (installs packages and downloads `data_raw` from Google Drive if needed). Then load cleaning helpers.
+
+```{r run-setup, include = FALSE}
+if (file.exists("R/setup.R")) {
+  source("R/setup.R")
+}
+```
+
+```{r run-download-data_raw, include = FALSE}
+source(here::here("R", "download_data_raw.R"))
+download_data_raw(root_dir = here::here(), skip_if_exists = TRUE)
+```
+
 Load cleaning setup and project packages. Raw data lives in `data_raw/`; we use the NUTS boundaries GeoPackage.
 
 ```{r setup, include = FALSE}
-source(here::here("data_cleaning.R"))
+source(here::here("R", "data_cleaning.R"))
 ```
 
 ```{r check-terra}

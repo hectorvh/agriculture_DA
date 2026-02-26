@@ -1,5 +1,5 @@
 # Package stack for pollination analysis (simple + fast + reliable)
-# Run 00_setup_renv.R once to init renv and install these.
+# Run R/setup.R once to install these (or use renv).
 
 # Core spatial
 # terra  -> raster work (E-OBS NetCDF, masking, resampling, raster math, time summaries)

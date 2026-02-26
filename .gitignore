@@ -2,6 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+.Rprofile
 *.RprojREADME_files
 
 # renv: use lockfile, ignore library (reinstall from lock)

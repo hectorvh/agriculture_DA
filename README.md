@@ -53,20 +53,23 @@ Store raw downloads under `data_raw/` (e.g. E-OBS NetCDF in `data_raw/eobs/`, NU
 | **Spatial autocorrelation** | **sfdep** (tidy) + **spdep** (engine): neighbors, weights, Global Moran's I, Local Moran (LISA) |
 | **Data wrangling** | **dplyr**, **tidyr** |
 | **Mapping** | **tmap** (main: thematic maps). Optional: ggplot2 + tidyterra (paper-style) |
-| **Repro + paths** | **here** (`here("data_raw", ...)`), **renv** (lock package versions) |
+| **Repro + paths** | **here** (`here("data_raw", ...)`), **googledrive** (download `data_raw` from Drive) |
 
 Raster workflow: keep analyses in R; use **terra::project** / **terra::resample** with a **0.1° template** (see `R/utils_template.R`).
 
 ## Setup (one-time)
 
-1. Open project in R (set working directory to project root or open `.Rproj` if you add one).
-2. Install **renv** if needed: `install.packages("renv")`.
-3. Run:
+1. Open the project in R (set working directory to the project root, or open the `.Rproj` if you use one).
+2. Run setup once:
    ```r
-   source("R/00_setup_renv.R")
+   source("R/setup.R")
    ```
-   This inits **renv**, installs the stack, and creates `renv.lock`.
-4. Restart R. Next time you open the project, renv will auto-activate (`.Rprofile`).
+   This installs the required packages (terra, sf, exactextractr, sfdep, spdep, dplyr, tidyr, tmap, here, googledrive, quarto, ggplot2) and downloads `data_raw` from Google Drive (unzipped into `data_raw/`). One-time Google auth may be required.
+3. Render the report:
+   ```r
+   quarto::quarto_render("main.qmd")
+   ```
+   Or run chunks in `main.qmd` interactively.
 
 ## Paths
 
