@@ -116,9 +116,9 @@ The report runs a single pipeline:
 3. **Study area** — Filter NUTS to DE–BE–NL, fix geometry, build mask.
 4. **Clip E-OBS** — Mask/crop rasters to DE–BE–NL; save to `data_proc/rasters/`.
 5. **Time window** — April–May (pollination window).
-6. **Daily suitability (PSI)** — Binary suitability from E-OBS rules; temporal summaries (mean suitability, suitable days, SD).
+6. **Daily suitability (PSI)** — Continuous suitability (0–1) from E-OBS rules; temporal summaries (mean PSI, equivalent suitable days, SD).
 7. **SPAM** — Load crop rasters (e.g. RAPE, TEMF, SUNF), project/resample to E-OBS grid, convert to crop fraction.
-8. **Crop-weighted metrics** — Crop-weighted suitability and “bad days” (exposure).
+8. **Crop-weighted metrics** — Crop-weighted suitability and deficit exposure (equivalent unsuitable days).
 9. **Zonal stats** — Aggregate rasters to NUTS regions with **exactextractr**; write tables to `data_proc/tables/` and `outputs/tables/`.
 10. **Spatial autocorrelation** — Queen contiguity, Global Moran’s I, LISA (local Moran); join back to regions.
 11. **Deliverables** — Maps (tmap), time series plots, ranking tables in `outputs/maps/` and `outputs/tables/`.

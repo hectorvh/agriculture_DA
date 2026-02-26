@@ -165,18 +165,50 @@ rr_am <- rr_clip[[sel_am]]
 
 ## Step 5 — Compute daily suitability (PSI) from E-OBS
 
-Define rules (example you already had):
+Use a continuous PSI in [0, 1] (instead of binary 0/1).
 
-- temp suitable: 12–25°C
-- rain suitable: RR < 1 mm/day
+Scoring assumptions (piecewise linear):
 
-### 5.1 Binary suitability per day
+- Temperature score = 1.0 in 12-25 C, declines to 0 at 8 C and 30 C.
+- Rain score = 1.0 for RR <= 1 mm/day, declines to 0 at RR >= 5 mm/day.
+
+### 5.1 Continuous suitability per day (Apr-May)
 
 ```{r psi-daily}
-temp_ok<- tg_am>=12& tg_am<=25
-rain_ok<- rr_am<1
+compute_daily_psi <- function(tg_stack, rr_stack,
+                              t_zero_low = 8, t_opt_low = 12,
+                              t_opt_high = 25, t_zero_high = 30,
+                              rr_opt = 1, rr_zero = 5) {
+  temp_score <- ifel(
+    is.na(tg_stack), NA,
+    ifel(
+      tg_stack <= t_zero_low | tg_stack >= t_zero_high, 0,
+      ifel(
+        tg_stack >= t_opt_low & tg_stack <= t_opt_high, 1,
+        ifel(
+          tg_stack < t_opt_low,
+          (tg_stack - t_zero_low) / (t_opt_low - t_zero_low),
+          (t_zero_high - tg_stack) / (t_zero_high - t_opt_high)
+        )
+      )
+    )
+  )
 
-psi_daily<- temp_ok* rain_ok  # 1 if both true else 0
+  rain_score <- ifel(
+    is.na(rr_stack), NA,
+    ifel(
+      rr_stack <= rr_opt, 1,
+      ifel(
+        rr_stack >= rr_zero, 0,
+        (rr_zero - rr_stack) / (rr_zero - rr_opt)
+      )
+    )
+  )
+
+  clamp(temp_score * rain_score, lower = 0, upper = 1)
+}
+
+psi_daily <- compute_daily_psi(tg_am, rr_am)
 ```
 
 ### 5.2 Save daily PSI
@@ -185,18 +217,18 @@ psi_daily<- temp_ok* rain_ok  # 1 if both true else 0
 writeRaster(psi_daily, here("data_proc/rasters/psi_daily.tif"), overwrite=TRUE)
 ```
 
-**Outputs:** mean, count, variability.
+**Outputs:** mean, equivalent days, variability.
 
 ## Step 6 — Temporal summaries ("spatio-temporal" core)
 
 
-### 6.1 Mean suitability (fraction of suitable days)
+### 6.1 Mean suitability (mean daily PSI)
 
 ```{r psi-mean}
 psi_mean<- app(psi_daily, mean, na.rm=TRUE)  # 0–1
 ```
 
-### 6.2 Number of suitable days
+### 6.2 Equivalent suitable days
 
 ```{r psi-days}
 sum_or_na <- function(x) {
@@ -204,10 +236,16 @@ sum_or_na <- function(x) {
   sum(x, na.rm = TRUE)
 }
 
-psi_days<- app(psi_daily, sum_or_na)  # count of days (preserve all-NA cells)
+psi_days<- app(psi_daily, sum_or_na)  # sum of daily PSI in the window
 ```
 
-### 6.3 Variability / instability (SD)
+### 6.3 Equivalent deficit days
+
+```{r psi-deficit-days}
+psi_deficit_days <- app(1 - psi_daily, sum_or_na)
+```
+
+### 6.4 Variability / instability (SD)
 
 ```{r psi-sd}
 psi_sd<- app(psi_daily, sd, na.rm=TRUE)
@@ -218,6 +256,7 @@ Save them:
 ```{r save-psi-summaries}
 writeRaster(psi_mean, here("data_proc/rasters/psi_mean_am.tif"), overwrite=TRUE)
 writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
+writeRaster(psi_deficit_days, here("data_proc/rasters/psi_deficit_days_am.tif"), overwrite=TRUE)
 writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
 ```
 
@@ -225,17 +264,25 @@ writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
 # Sensitivity window (Mar-Jun)
 tg_mj <- tg_clip[[sel_mj]]
 rr_mj <- rr_clip[[sel_mj]]
-psi_daily_mj <- (tg_mj >= 12 & tg_mj <= 25) * (rr_mj < 1)
+psi_daily_mj <- compute_daily_psi(tg_mj, rr_mj)
 psi_mean_mj <- app(psi_daily_mj, mean, na.rm = TRUE)
+psi_days_mj <- app(psi_daily_mj, sum_or_na)
+psi_deficit_days_mj <- app(1 - psi_daily_mj, sum_or_na)
 
 # Annual context window (full year)
 tg_yr <- tg_clip[[sel_yr]]
 rr_yr <- rr_clip[[sel_yr]]
-psi_daily_yr <- (tg_yr >= 12 & tg_yr <= 25) * (rr_yr < 1)
+psi_daily_yr <- compute_daily_psi(tg_yr, rr_yr)
 psi_mean_yr <- app(psi_daily_yr, mean, na.rm = TRUE)
+psi_days_yr <- app(psi_daily_yr, sum_or_na)
+psi_deficit_days_yr <- app(1 - psi_daily_yr, sum_or_na)
 
 writeRaster(psi_mean_mj, here("data_proc/rasters/psi_mean_marjun.tif"), overwrite = TRUE)
+writeRaster(psi_days_mj, here("data_proc/rasters/psi_days_marjun.tif"), overwrite = TRUE)
+writeRaster(psi_deficit_days_mj, here("data_proc/rasters/psi_deficit_days_marjun.tif"), overwrite = TRUE)
 writeRaster(psi_mean_yr, here("data_proc/rasters/psi_mean_annual.tif"), overwrite = TRUE)
+writeRaster(psi_days_yr, here("data_proc/rasters/psi_days_annual.tif"), overwrite = TRUE)
+writeRaster(psi_deficit_days_yr, here("data_proc/rasters/psi_deficit_days_annual.tif"), overwrite = TRUE)
 
 window_summary <- tibble::tibble(
   window = c("Apr-May (main)", "Mar-Jun (sensitivity)", "Annual (context)"),
@@ -243,7 +290,18 @@ window_summary <- tibble::tibble(
     as.numeric(global(psi_mean, "mean", na.rm = TRUE)[1, 1]),
     as.numeric(global(psi_mean_mj, "mean", na.rm = TRUE)[1, 1]),
     as.numeric(global(psi_mean_yr, "mean", na.rm = TRUE)[1, 1])
-  )
+  ),
+  equiv_suitable_days = c(
+    as.numeric(global(psi_days, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_days_mj, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_days_yr, "mean", na.rm = TRUE)[1, 1])
+  ),
+  equiv_deficit_days = c(
+    as.numeric(global(psi_deficit_days, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_deficit_days_mj, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_deficit_days_yr, "mean", na.rm = TRUE)[1, 1])
+  ),
+  n_days = c(length(sel_am), length(sel_mj), length(sel_yr))
 )
 
 dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
@@ -256,6 +314,7 @@ library(terra)
 
 psi_mean_am <- rast(here("data_proc/rasters/psi_mean_am.tif"))
 psi_days_am <- rast(here("data_proc/rasters/psi_days_am.tif"))
+psi_deficit_days_am <- rast(here("data_proc/rasters/psi_deficit_days_am.tif"))
 psi_sd_am   <- rast(here("data_proc/rasters/psi_sd_am.tif"))
 tg_debenl   <- rast(here("data_proc/rasters/tg_debenl.tif"))
 rr_debenl   <- rast(here("data_proc/rasters/rr_debenl.tif"))
@@ -272,7 +331,7 @@ psi_daily   <- rast(here("data_proc/rasters/psi_daily.tif"))   # if you saved it
 #global(rr_debenl, range, na.rm=TRUE)
 
 # PSI logic check
-unique(values(psi_daily)[!is.na(values(psi_daily))])
+global(psi_daily, "range", na.rm = TRUE)
 ```
 
 ## Step 7 — Bring SPAM 2020 crop data into the same grid
@@ -372,9 +431,9 @@ writeRaster(temf_suit, here("data_proc/rasters/temf_suitability_weighted.tif"), 
 writeRaster(sunf_suit, here("data_proc/rasters/sunf_suitability_weighted.tif"), overwrite=TRUE)
 ```
 
-### 9.2 Crop-weighted “bad days” (exposure to unsuitable days)
+### 9.2 Crop-weighted deficit exposure (equivalent unsuitable days)
 
-First define “bad day” = PSI == 0:
+Define daily deficit as (1 - PSI):
 
 ```{r rape-bad-exposure}
 bad_daily <- 1 - psi_daily
@@ -407,6 +466,7 @@ admin_stats<- admin_4326%>%
   mutate(
     psi_mean = exact_extract(psi_mean,           ., "mean"),
     psi_days = exact_extract(psi_days,           ., "mean"),
+    psi_deficit = exact_extract(psi_deficit_days, ., "mean"),
     psi_sd   = exact_extract(psi_sd,             ., "mean"),
     rape_frac= exact_extract(rape_frac,          ., "mean"),
     rape_suit= exact_extract(rape_suit,          ., "mean"),
@@ -662,8 +722,8 @@ map_psi_mean <- tm_shape(psi_mean) +
   tm_layout(title = "Mean PSI (Apr-May)", frame = FALSE)
 
 map_psi_days <- tm_shape(psi_days) +
-  tm_raster(title = "Suitable days") +
-  tm_layout(title = "Suitable days count (Apr-May)", frame = FALSE)
+  tm_raster(title = "Equivalent suitable days") +
+  tm_layout(title = "Equivalent suitable days (Apr-May)", frame = FALSE)
 
 map_psi_sd <- tm_shape(psi_sd) +
   tm_raster(title = "PSI SD") +
@@ -822,4 +882,3 @@ top_rape_bad %>% select(any_of(c(id_cols, "rape_bad")))
 top_rape_suit %>% select(any_of(c(id_cols, "rape_suit")))
 top_psi_sd %>% select(any_of(c(id_cols, "psi_sd")))
 ```
-
