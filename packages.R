@@ -20,6 +20,7 @@
 # Repro + paths
 # here  -> robust paths: here("data_raw", ...)
 # renv  -> lock versions (init via 00_setup_renv.R)
+# googledrive -> authenticated Google Drive downloads (ZIP datasets)
 
 .pkgs <- c(
   "terra",
@@ -30,7 +31,8 @@
   "dplyr",
   "tidyr",
   "tmap",
-  "here"
+  "here",
+  "googledrive"
 )
 
 # Optional (paper-style plots): "ggplot2", "tidyterra"

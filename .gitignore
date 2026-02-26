@@ -8,4 +8,5 @@
 renv/library/
 renv/local/
 data_raw/
+data_raw.zip
 bin/
