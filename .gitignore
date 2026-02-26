@@ -8,3 +8,4 @@
 renv/library/
 renv/local/
 data_raw/
+bin/

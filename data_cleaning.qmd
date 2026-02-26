@@ -100,12 +100,17 @@ tg_clip<- mask(crop(tg, mask_v), mask_v)
 rr_clip<- mask(crop(rr, mask_v), mask_v)
 ```
 
-**Outputs saved:**
+**Save Outputs:**
 
 ```{r save-clipped-rasters}
 dir.create(here("data_proc", "rasters"), showWarnings = FALSE, recursive = TRUE)
-writeRaster(tg_clip, here("data_proc/rasters/tg_debenl.tif"), overwrite=TRUE)
-writeRaster(rr_clip, here("data_proc/rasters/rr_debenl.tif"), overwrite=TRUE)
+# Remove existing files so writeRaster can overwrite (avoids "cannot overwrite" when file is locked)
+fn_tg <- here("data_proc/rasters/tg_debenl.tif")
+fn_rr <- here("data_proc/rasters/rr_debenl.tif")
+if (file.exists(fn_tg)) file.remove(fn_tg)
+if (file.exists(fn_rr)) file.remove(fn_rr)
+writeRaster(tg_clip, fn_tg, overwrite = TRUE)
+writeRaster(rr_clip, fn_rr, overwrite = TRUE)
 ```
 
 ## Step 4 — Select the time window (April–May)
@@ -115,17 +120,34 @@ E-OBS NetCDF usually has a time index. Two robust approaches:
 ### 4.1 If time labels exist (best)
 
 ```{r check-time}
-time(tg_clip)  # check if terra shows dates
+head(time(tg_clip), 20)  # first few dates; use time(tg_clip) for full vector
 ```
 
 If dates exist, filter by month:
 
 ```{r filter-april-may}
-dates<- as.Date(time(tg_clip))
-sel<- which(format(dates,"%m")%in%c("04","05"))
+tg_dates <- as.Date(time(tg_clip))
+rr_dates <- as.Date(time(rr_clip))
 
-tg_am<- tg_clip[[sel]]
-rr_am<- rr_clip[[sel]]
+if (length(tg_dates) != nlyr(tg_clip) || any(is.na(tg_dates))) {
+  stop("TG time index is missing or invalid; cannot filter windows.")
+}
+if (length(rr_dates) != nlyr(rr_clip) || any(is.na(rr_dates))) {
+  stop("RR time index is missing or invalid; cannot filter windows.")
+}
+if (!identical(tg_dates, rr_dates)) {
+  stop("TG and RR dates are not aligned. Harmonize time layers before PSI.")
+}
+
+sel_am <- which(format(tg_dates, "%m") %in% c("04", "05"))               # main window
+sel_mj <- which(format(tg_dates, "%m") %in% c("03", "04", "05", "06"))   # sensitivity
+sel_yr <- seq_along(tg_dates)                                             # annual context
+
+if (length(sel_am) == 0) stop("No April-May layers found.")
+if (length(sel_mj) == 0) stop("No March-June layers found.")
+
+tg_am <- tg_clip[[sel_am]]
+rr_am <- rr_clip[[sel_am]]
 ```
 
 ## Step 5 — Compute daily suitability (PSI) from E-OBS
@@ -144,17 +166,16 @@ rain_ok<- rr_am<1
 psi_daily<- temp_ok* rain_ok  # 1 if both true else 0
 ```
 
-### 5.2 Save daily PSI (optional but nice)
+### 5.2 Save daily PSI
 
 ```{r save-psi-daily}
 writeRaster(psi_daily, here("data_proc/rasters/psi_daily.tif"), overwrite=TRUE)
 ```
 
-**Outputs you'll later summarize:** mean, count, variability.
+**Outputs:** mean, count, variability.
 
-## Step 6 — Temporal summaries (this is the "spatio-temporal" core)
+## Step 6 — Temporal summaries ("spatio-temporal" core)
 
-You should compute at least these 3:
 
 ### 6.1 Mean suitability (fraction of suitable days)
 
@@ -165,7 +186,12 @@ psi_mean<- app(psi_daily, mean, na.rm=TRUE)  # 0–1
 ### 6.2 Number of suitable days
 
 ```{r psi-days}
-psi_days<- app(psi_daily,sum, na.rm=TRUE)  # count of days
+sum_or_na <- function(x) {
+  if (all(is.na(x))) return(NA_real_)
+  sum(x, na.rm = TRUE)
+}
+
+psi_days<- app(psi_daily, sum_or_na)  # count of days (preserve all-NA cells)
 ```
 
 ### 6.3 Variability / instability (SD)
@@ -180,6 +206,36 @@ Save them:
 writeRaster(psi_mean, here("data_proc/rasters/psi_mean_am.tif"), overwrite=TRUE)
 writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
 writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
+```
+
+```{r psi-window-context}
+# Sensitivity window (Mar-Jun)
+tg_mj <- tg_clip[[sel_mj]]
+rr_mj <- rr_clip[[sel_mj]]
+psi_daily_mj <- (tg_mj >= 12 & tg_mj <= 25) * (rr_mj < 1)
+psi_mean_mj <- app(psi_daily_mj, mean, na.rm = TRUE)
+
+# Annual context window (full year)
+tg_yr <- tg_clip[[sel_yr]]
+rr_yr <- rr_clip[[sel_yr]]
+psi_daily_yr <- (tg_yr >= 12 & tg_yr <= 25) * (rr_yr < 1)
+psi_mean_yr <- app(psi_daily_yr, mean, na.rm = TRUE)
+
+writeRaster(psi_mean_mj, here("data_proc/rasters/psi_mean_marjun.tif"), overwrite = TRUE)
+writeRaster(psi_mean_yr, here("data_proc/rasters/psi_mean_annual.tif"), overwrite = TRUE)
+
+window_summary <- tibble::tibble(
+  window = c("Apr-May (main)", "Mar-Jun (sensitivity)", "Annual (context)"),
+  mean_psi = c(
+    as.numeric(global(psi_mean, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_mean_mj, "mean", na.rm = TRUE)[1, 1]),
+    as.numeric(global(psi_mean_yr, "mean", na.rm = TRUE)[1, 1])
+  )
+)
+
+dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
+write.csv(window_summary, here("outputs/tables/window_summary.csv"), row.names = FALSE)
+window_summary
 ```
 
 ```{r check-rasters}
@@ -213,27 +269,49 @@ This is where SPAM shines: it's already ~10 km, but it may still differ from E-O
 ### 7.1 Load SPAM crop raster (example: harvested area for rapeseed)
 
 ```{r spam-load}
-spam_rape_ha<- rast(here("data_raw/spam/spam2020_V2r0_global_H_RAPE_A.tif"))
+read_spam_crop <- function(crop_code) {
+  candidates <- c(
+    sprintf("spam2020_V2r0_global_H_%s_TA.tif", crop_code),
+    sprintf("spam2020_V2r0_global_H_%s_A.tif", crop_code)
+  )
+  found <- candidates[file.exists(here("data_raw/spam", candidates))]
+  if (length(found) == 0) {
+    stop("Missing SPAM raster for crop code: ", crop_code, ". Expected one of: ", paste(candidates, collapse = ", "))
+  }
+  if (found[1] != candidates[1]) {
+    warning("Using fallback file for ", crop_code, ": ", found[1])
+  }
+  rast(here("data_raw/spam", found[1]))
+}
+
+spam_crops_ha <- list(
+  rape = read_spam_crop("RAPE"),
+  temf = read_spam_crop("TEMF"),
+  sunf = read_spam_crop("SUNF")
+)
 ```
 
 ### 7.2 Normalize CRS and resample SPAM to E-OBS template
 
 Use `psi_mean` as the template because it's exactly your analysis grid.
 
-- Here we **force both rasters to EPSG:4326** and then use `resample()`. This avoids PROJ/GDAL transformation issues.
-- If SPAM is continuous (ha, production): use `"bilinear"` or `"average"` style resampling.
+- Do not overwrite CRS labels with `crs(x) <- ...`; that only relabels metadata.
+- Use `project()` to reproject and align each crop raster to the PSI template.
+- If SPAM is continuous (ha, production): `"bilinear"` is acceptable.
 
 ```{r spam-project}
-crs(spam_rape_ha)<- "EPSG:4326"
-crs(psi_mean)    <- "EPSG:4326"
-
-spam_rape_ha_eobs<- resample(spam_rape_ha, psi_mean, method="bilinear")
+spam_crops_eobs <- lapply(
+  spam_crops_ha,
+  function(r) project(r, psi_mean, method = "bilinear")
+)
 ```
 
 Save:
 
 ```{r spam-save}
-writeRaster(spam_rape_ha_eobs, here("data_proc/rasters/spam_rape_ha_eobs.tif"), overwrite=TRUE)
+writeRaster(spam_crops_eobs$rape, here("data_proc/rasters/spam_rape_ha_eobs.tif"), overwrite=TRUE)
+writeRaster(spam_crops_eobs$temf, here("data_proc/rasters/spam_temf_ha_eobs.tif"), overwrite=TRUE)
+writeRaster(spam_crops_eobs$sunf, here("data_proc/rasters/spam_sunf_ha_eobs.tif"), overwrite=TRUE)
 ```
 
 ## Step 8 — Convert SPAM “harvested area” to a crop fraction/intensity (optional but strong)
@@ -241,16 +319,26 @@ writeRaster(spam_rape_ha_eobs, here("data_proc/rasters/spam_rape_ha_eobs.tif"), 
 ### 8.1 Compute cell area (ha) for the E-OBS grid
 
 ```{r cell-area}
-cell_area_m2<- cellSize(psi_mean, unit="m")  # raster of m²
-cell_area_ha<- cell_area_m2/10000
+cell_area_m2 <- tryCatch(
+  cellSize(psi_mean, unit = "m"),
+  error = function(e) cellSize(psi_mean)
+)
+cell_area_ha <- cell_area_m2 / 10000
+global(cell_area_m2, "range", na.rm = TRUE)
 ```
 
 ### 8.2 Crop fraction (0–1-ish, can exceed 1 in rare edge cases; clamp)
 
 ```{r rape-fraction}
-rape_frac<- spam_rape_ha_eobs/ cell_area_ha
-rape_frac<- clamp(rape_frac,0,1)
+crop_frac <- lapply(spam_crops_eobs, function(r) clamp(r / cell_area_ha, 0, 1))
+
+rape_frac <- crop_frac$rape
+temf_frac <- crop_frac$temf
+sunf_frac <- crop_frac$sunf
+
 writeRaster(rape_frac, here("data_proc/rasters/rape_fraction.tif"), overwrite=TRUE)
+writeRaster(temf_frac, here("data_proc/rasters/temf_fraction.tif"), overwrite=TRUE)
+writeRaster(sunf_frac, here("data_proc/rasters/sunf_fraction.tif"), overwrite=TRUE)
 ```
 
 ## Step 9 — Compute crop-weighted suitability and crop-weighted risk
@@ -260,8 +348,15 @@ You want metrics that combine climate + crop exposure.
 ### 9.1 Crop-weighted suitability
 
 ```{r rape-suitability-weighted}
-rape_suit<- psi_mean* rape_frac
+crop_suit <- lapply(crop_frac, function(fr) psi_mean * fr)
+
+rape_suit <- crop_suit$rape
+temf_suit <- crop_suit$temf
+sunf_suit <- crop_suit$sunf
+
 writeRaster(rape_suit, here("data_proc/rasters/rape_suitability_weighted.tif"), overwrite=TRUE)
+writeRaster(temf_suit, here("data_proc/rasters/temf_suitability_weighted.tif"), overwrite=TRUE)
+writeRaster(sunf_suit, here("data_proc/rasters/sunf_suitability_weighted.tif"), overwrite=TRUE)
 ```
 
 ### 9.2 Crop-weighted “bad days” (exposure to unsuitable days)
@@ -269,11 +364,18 @@ writeRaster(rape_suit, here("data_proc/rasters/rape_suitability_weighted.tif"), 
 First define “bad day” = PSI == 0:
 
 ```{r rape-bad-exposure}
-bad_daily<- 1- psi_daily
-bad_days<- app(bad_daily,sum, na.rm=TRUE)  # count of bad days
+bad_daily <- 1 - psi_daily
+bad_days <- app(bad_daily, sum_or_na)
 
-rape_bad_exposure<- bad_days* rape_frac
+crop_bad <- lapply(crop_frac, function(fr) bad_days * fr)
+
+rape_bad_exposure <- crop_bad$rape
+temf_bad_exposure <- crop_bad$temf
+sunf_bad_exposure <- crop_bad$sunf
+
 writeRaster(rape_bad_exposure, here("data_proc/rasters/rape_bad_exposure.tif"), overwrite=TRUE)
+writeRaster(temf_bad_exposure, here("data_proc/rasters/temf_bad_exposure.tif"), overwrite=TRUE)
+writeRaster(sunf_bad_exposure, here("data_proc/rasters/sunf_bad_exposure.tif"), overwrite=TRUE)
 ```
 
 ## Step 10 — Aggregate rasters to Admin regions
@@ -295,13 +397,20 @@ admin_stats<- admin_4326%>%
     psi_sd   = exact_extract(psi_sd,             ., "mean"),
     rape_frac= exact_extract(rape_frac,          ., "mean"),
     rape_suit= exact_extract(rape_suit,          ., "mean"),
-    rape_bad = exact_extract(rape_bad_exposure,  ., "mean")
+    rape_bad = exact_extract(rape_bad_exposure,  ., "mean"),
+    temf_frac= exact_extract(temf_frac,          ., "mean"),
+    temf_suit= exact_extract(temf_suit,          ., "mean"),
+    temf_bad = exact_extract(temf_bad_exposure,  ., "mean"),
+    sunf_frac= exact_extract(sunf_frac,          ., "mean"),
+    sunf_suit= exact_extract(sunf_suit,          ., "mean"),
+    sunf_bad = exact_extract(sunf_bad_exposure,  ., "mean")
   )
 ```
 
 Save table:
 
 ```{r admin-stats-save}
+dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
 write.csv(
   st_drop_geometry(admin_stats),
   here("data_proc/tables/admin_pollination_stats.csv"),
@@ -363,7 +472,72 @@ global_mc
 
 ```
 
-### 11.3 Local Moran’s I (LISA)
+### 11.3 Cross-crop comparison (exposure + clustering)
+
+```{r crop-compare}
+library(dplyr)
+library(sfdep)
+
+compare_crops <- c("rape", "temf", "sunf")
+
+exposure_tbl <- tibble(
+  crop = compare_crops,
+  mean_bad = sapply(compare_crops, function(cr) mean(admin_stats_3035[[paste0(cr, "_bad")]], na.rm = TRUE)),
+  p90_bad = sapply(compare_crops, function(cr) as.numeric(quantile(admin_stats_3035[[paste0(cr, "_bad")]], probs = 0.90, na.rm = TRUE))),
+  mean_suit = sapply(compare_crops, function(cr) mean(admin_stats_3035[[paste0(cr, "_suit")]], na.rm = TRUE))
+) %>%
+  arrange(desc(mean_bad))
+
+run_crop_moran <- function(sf_obj, col_name, nsim = 999) {
+  sf_ok <- sf_obj %>%
+    mutate(value = .data[[col_name]]) %>%
+    filter(is.finite(value))
+
+  if (nrow(sf_ok) < 3) {
+    return(tibble(moran_I = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
+  }
+
+  nb_ok <- st_contiguity(sf_ok)
+  zero_nbr <- lengths(nb_ok) == 0
+  if (any(zero_nbr)) {
+    sf_ok <- sf_ok[!zero_nbr, ]
+    if (nrow(sf_ok) < 3) {
+      return(tibble(moran_I = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
+    }
+    nb_ok <- st_contiguity(sf_ok)
+  }
+
+  lw_ok <- st_weights(nb_ok, style = "W")
+  gm <- global_moran(sf_ok$value, nb_ok, lw_ok)
+  gm_perm <- global_moran_perm(sf_ok$value, nb_ok, lw_ok, nsim = nsim)
+
+  tibble(
+    moran_I = as.numeric(gm$I),
+    p_value = as.numeric(gm_perm$p.value),
+    n_regions = nrow(sf_ok)
+  )
+}
+
+cluster_tbl <- bind_rows(lapply(compare_crops, function(cr) {
+  out <- run_crop_moran(admin_stats_3035, paste0(cr, "_suit"))
+  out$crop <- cr
+  out
+})) %>%
+  select(crop, moran_I, p_value, n_regions) %>%
+  arrange(desc(moran_I))
+
+cat("Highest mean exposure (mean *_bad):", exposure_tbl$crop[1], "\n")
+cat("Strongest clustering (max Moran's I on *_suit):", cluster_tbl$crop[1], "\n")
+
+dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
+write.csv(exposure_tbl, here("outputs/tables/crop_exposure_comparison.csv"), row.names = FALSE)
+write.csv(cluster_tbl, here("outputs/tables/crop_clustering_comparison.csv"), row.names = FALSE)
+
+exposure_tbl
+cluster_tbl
+```
+
+### 11.4 Local Moran’s I (LISA)
 
 ```{r local-moran}
 library(dplyr)
@@ -508,6 +682,12 @@ map_psi_mean
 
 ### 12.2 Time series plot per region (region x day)
 
+```{r ggplot2-install}
+
+install.packages("ggplot2", repos = "https://cloud.r-project.org")
+library(ggplot2)
+```
+
 ```{r region-day-timeseries}
 library(dplyr)
 library(tidyr)
@@ -542,8 +722,8 @@ psi_dates <- suppressWarnings(as.Date(time(psi_daily)))
 if (length(psi_dates) != nlyr(psi_daily)) {
   psi_dates <- rep(as.Date(NA), nlyr(psi_daily))
 }
-if (all(is.na(psi_dates)) && exists("tg_dates") && exists("sel") && length(sel) == nlyr(psi_daily)) {
-  psi_dates <- tg_dates[sel]
+if (all(is.na(psi_dates)) && exists("tg_dates") && exists("sel_am") && length(sel_am) == nlyr(psi_daily)) {
+  psi_dates <- tg_dates[sel_am]
 }
 layer_lookup$date <- psi_dates
 
@@ -630,56 +810,3 @@ top_rape_suit %>% select(any_of(c(id_cols, "rape_suit")))
 top_psi_sd %>% select(any_of(c(id_cols, "psi_sd")))
 ```
 
-## NUTS boundaries (data_raw)
-
-Read the NUTS regions from GISCO: **NUTS_RG_20M_2024_3035.gpkg** (polygons, 1:20M, EPSG:3035).
-
-```{r read-nuts}
-nuts <- read_nuts_raw()
-```
-
-### Structure
-
-```{r nuts-structure}
-# CRS and extent
-st_crs(nuts)
-st_bbox(nuts)
-
-# Dimensions and column names
-dim(nuts)
-names(nuts)
-```
-
-### Preview
-
-```{r nuts-preview}
-# First rows (geometry omitted for display)
-nuts |> 
-  st_drop_geometry() |> 
-  head(10)
-```
-
-### NUTS levels
-
-```{r nuts-levels}
-# Typical GISCO attributes: LEVL_CODE (0=country, 1–3=NUTS1–3), NUTS_ID, NAME_LATN, etc.
-if ("LEVL_CODE" %in% names(nuts)) {
-  nuts |> 
-    st_drop_geometry() |> 
-    count(LEVL_CODE, name = "n_regions")
-}
-```
-
-### Simple map (NUTS)
-
-```{r map-nuts, fig.width = 8, fig.height = 6}
-library(tmap)
-tm_shape(nuts) +
-  tm_polygons(col = "grey85", border.col = "grey50") +
-  tm_layout(title = "NUTS (2024, 20M)", frame = FALSE)
-```
-
-## Next steps
-
-- Filter to study area or NUTS level (e.g. NUTS 1).
-- Reproject to WGS84 (EPSG:4326) if needed for E-OBS/crop rasters; save to `data_proc/`.
