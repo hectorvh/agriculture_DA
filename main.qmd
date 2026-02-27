@@ -479,6 +479,7 @@ writeRaster(sunf_frac, here("data_proc/rasters/sunf_fraction.tif"), overwrite=TR
 ## Step 9 — Compute crop-weighted suitability and crop-weighted risk
 
 You want metrics that combine climate + crop exposure.
+Note on units: `rape_suit = psi_mean * rape_frac` is fraction-based (0-1 scaled by crop fraction), while `rape_bad = psi_deficit_days_per_year * rape_frac` is day-based (equivalent unsuitable days/year scaled by crop fraction), so they are complementary indicators and should not be compared directly by magnitude.
 
 ### 9.1 Crop-weighted suitability
 
@@ -792,35 +793,50 @@ save_map <- function(map_obj, filename) {
 }
 
 admin_4326 <- st_transform(admin_debenl, 4326)
+admin_lvl0_4326 <- admin_debenl %>%
+  dplyr::group_by(CNTR_CODE) %>%
+  dplyr::summarise(do_union = TRUE, .groups = "drop") %>%
+  sf::st_make_valid() %>%
+  sf::st_transform(4326)
 
 map_psi_mean <- tm_shape(psi_mean) +
   tm_raster(title = "PSI mean") +
   tm_shape(admin_4326) +
   tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(admin_lvl0_4326) +
+  tm_borders(col = "black", lwd = 1.2) +
   tm_layout(title = "Mean PSI (Apr-May)", frame = FALSE)
 
 map_psi_days <- tm_shape(psi_days_per_year) +
   tm_raster(title = "Eq. suitable days/year") +
   tm_shape(admin_4326) +
   tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(admin_lvl0_4326) +
+  tm_borders(col = "black", lwd = 1.2) +
   tm_layout(title = "Mean equivalent suitable days per Apr-May season", frame = FALSE)
 
 map_psi_interannual_sd <- tm_shape(psi_interannual_sd) +
   tm_raster(title = "Interannual PSI SD") +
   tm_shape(admin_4326) +
   tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(admin_lvl0_4326) +
+  tm_borders(col = "black", lwd = 1.2) +
   tm_layout(title = "PSI interannual variability (SD, Apr-May means)", frame = FALSE)
 
 map_rape_frac <- tm_shape(rape_frac) +
   tm_raster(title = "Rape fraction") +
   tm_shape(admin_4326) +
   tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(admin_lvl0_4326) +
+  tm_borders(col = "black", lwd = 1.2) +
   tm_layout(title = "Rapeseed fraction/intensity", frame = FALSE)
 
 map_rape_suit <- tm_shape(rape_suit) +
   tm_raster(title = "Weighted suitability") +
   tm_shape(admin_4326) +
   tm_borders(col = "white", lwd = 0.5) +
+  tm_shape(admin_lvl0_4326) +
+  tm_borders(col = "black", lwd = 1.2) +
   tm_layout(title = "Crop-weighted suitability", frame = FALSE)
 
 save_map(map_psi_mean, here("outputs/maps/map_psi_mean.png"))
@@ -843,15 +859,60 @@ map_psi_mean
 
 ```{r region-day-timeseries}
 library(dplyr)
+library(tidyr)
+library(exactextractr)
 library(ggplot2)
 library(here)
 
 dir.create(here("outputs", "plots"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
+
+psi_region_day_path <- here("data_proc", "tables", "psi_region_day.csv")
 if (!exists("psi_region_day", inherits = FALSE)) {
-  psi_region_day <- read.csv(
-    here("data_proc", "tables", "psi_region_day.csv"),
-    stringsAsFactors = FALSE
-  )
+  if (file.exists(psi_region_day_path)) {
+    psi_region_day <- read.csv(
+      psi_region_day_path,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    if (!exists("psi_daily", inherits = FALSE) || !exists("admin_debenl", inherits = FALSE)) {
+      stop("psi_region_day.csv not found, and cannot rebuild because psi_daily/admin_debenl are missing in memory.")
+    }
+
+    admin_ts <- sf::st_transform(admin_debenl, terra::crs(psi_daily))
+    admin_labels <- sf::st_drop_geometry(admin_ts) %>%
+      mutate(region_id = as.character(NUTS_ID))
+    label_candidates <- c("NAME_LATN", "NUTS_NAME", "NAME_ENGL")
+    label_col <- label_candidates[label_candidates %in% names(admin_labels)]
+    admin_labels$region_label <- if (length(label_col) > 0) as.character(admin_labels[[label_col[1]]]) else admin_labels$region_id
+
+    daily_wide <- exactextractr::exact_extract(psi_daily, admin_ts, "mean") %>% tibble::as_tibble()
+    if (nrow(daily_wide) != nrow(admin_labels)) {
+      stop("Row mismatch while rebuilding psi_region_day from psi_daily.")
+    }
+    daily_wide$region_id <- admin_labels$region_id
+
+    layer_lookup <- tibble::tibble(
+      layer = paste0("mean.", names(psi_daily)),
+      layer_index = seq_len(terra::nlyr(psi_daily))
+    )
+    psi_dates <- suppressWarnings(as.Date(terra::time(psi_daily)))
+    if (length(psi_dates) != terra::nlyr(psi_daily) || all(is.na(psi_dates))) {
+      if (exists("tg_dates", inherits = FALSE) && exists("sel_am", inherits = FALSE)) {
+        psi_dates <- tg_dates[sel_am]
+      } else {
+        psi_dates <- rep(as.Date(NA), terra::nlyr(psi_daily))
+      }
+    }
+    layer_lookup$date <- psi_dates
+
+    psi_region_day <- daily_wide %>%
+      tidyr::pivot_longer(-region_id, names_to = "layer", values_to = "psi_daily_mean") %>%
+      dplyr::left_join(layer_lookup, by = "layer") %>%
+      dplyr::left_join(admin_labels %>% dplyr::select(region_id, region_label), by = "region_id")
+
+    write.csv(psi_region_day, psi_region_day_path, row.names = FALSE)
+  }
 }
 psi_region_day <- psi_region_day %>%
   mutate(
@@ -938,7 +999,7 @@ ggsave(here("outputs/plots/ts_psi_daily_top10_rape_bad_2020.png"), p_ts_2020, wi
 p_ts_2020
 ```
 
-### 12.3 Ranking tables (policy relevance)
+### 12.3 Ranking tables
 
 ```{r ranking-tables}
 library(dplyr)
