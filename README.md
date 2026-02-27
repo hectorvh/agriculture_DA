@@ -1,4 +1,4 @@
-# Precision Pollination for Agriculture Mapping
+# Precision Pollination Mapping for Agriculture (Version 3)
 
 Spatio-temporal workflow for mapping pollination climate suitability and crop-weighted exposure across Germany, Belgium, and the Netherlands.
 
