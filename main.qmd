@@ -26,7 +26,7 @@ execute:
   message: false
 ---
 
-GitHub repository: https://github.com/hectorvh/agriculture_DA.git
+GitHub repository: [https://github.com/hectorvh/agriculture_DA.git](https://github.com/hectorvh/agriculture_DA.git)
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
