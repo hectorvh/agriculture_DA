@@ -4,7 +4,8 @@ format:
   html:
     toc: true
     toc-depth: 2
-    code-fold: false
+    code-fold: true
+    code-summary: "Show code"
 jupyter: R
 ---
 
@@ -40,7 +41,109 @@ system.file("proj", package = "terra")
 # should be something like ".../R/win-library/4.5/terra/proj"
 ```
 
-## Step 1 — Load everything and check metadata
+## 1. Introduction and Personas
+
+### 1.1 Context
+Pollinator-dependent crops account for a substantial share of agricultural output across Germany, Belgium, and the Netherlands. Climatic conditions during crop flowering directly govern bee foraging activity and, by extension, fruit and seed set. Farmers and advisors rarely have access to spatially explicit, crop-specific assessments of how often, and where, weather conditions are suitable for pollination. This project develops a regional Pollination Suitability Index (PSI) computed from daily observed climate data and cross-referenced with crop distribution, providing decision-relevant maps and statistics for three key pollination-dependent crops: rapeseed (Brassica napus), temperate fruit (TEMF), and sunflower (Helianthus annuus).
+
+### 1.2 Persona 1 - Lars Hoffmann (Regional Crop Insurance Analyst)
+Age: 45  
+Location: Munster, Germany  
+Role: Senior analyst at a regional agricultural insurer covering DE-BE-NL
+
+Lars evaluates climatic risk exposure for pollination-dependent crops across multiple regions each season. He currently relies on point weather station data and annual yield statistics, which are slow to arrive and difficult to spatialize. He needs to identify which NUTS-2 regions consistently experience unsuitable weather during critical bloom windows for covered crops. This helps him price risk, flag high-exposure zones for proactive client contact, and justify regional premium differentiation to underwriters.
+
+User Story 1 - Risk Exposure Mapping  
+As Lars, I want a ranked map of crop-weighted climate deficit exposure per region and crop, so that I can identify where systematic pollination risk is highest and adjust coverage strategies.
+
+User Story 2 - Interannual Instability  
+As Lars, I want to understand year-to-year variation in seasonal suitability, so that I can distinguish regions with consistently poor conditions from those that are only unlucky in individual years.
+
+### 1.3 Persona 2 - Dr. Anneke Visser (Regional Agronomy Advisor)
+Age: 36  
+Location: Wageningen, Netherlands  
+Role: Pollination and crop health advisor at a cross-border agricultural cooperative covering NL, BE, and western DE
+
+Anneke supports farmers growing rapeseed, fruit, and sunflower across the study region. She understands crop phenology well but lacks a unified tool that connects bloom timing, spatial crop distribution, and historical climate suitability in one view. She wants to identify regions with a structural match between good climate conditions and high crop presence, and regions where high crop intensity coincides with persistently unsuitable weather.
+
+User Story 3 - Suitability-Crop Overlap  
+As Anneke, I want a map showing where crop-weighted suitability is highest per bloom window, so that I can benchmark regions and identify best-practice areas for farmer visits and demonstration plots.
+
+User Story 4 - Spatial Hotspot Detection  
+As Anneke, I want to know whether poor pollination climate is spatially clustered rather than random, so that I can plan regional advisory campaigns instead of treating each farm in isolation.
+
+## 2. Research Questions
+Three research questions structure the analysis and link directly to persona needs.
+
+- Q1. Where is spring climate suitability for pollination highest and most stable across DE-BE-NL during crop-specific bloom windows?
+- Q2. Where does each crop's geographic distribution overlap with unsuitable or variable climate conditions, and which regions carry the greatest crop-weighted deficit exposure?
+- Q3. Are crop-weighted suitability and deficit exposure patterns spatially clustered at the NUTS-2 level, and if so, where are the significant hotspots?
+
+## 3. Data
+
+### 3.1 E-OBS Daily Climate Grids (v27.0e)
+Climate input is sourced from E-OBS, a daily gridded observational dataset produced by Copernicus Climate Change Service and the EURO4M project. The dataset covers Europe at 0.1 degree regular latitude-longitude resolution (about 7 to 9 km at study latitudes). Two variables are used: ensemble mean daily mean temperature (TG, degC) and ensemble mean daily precipitation sum (RR, mm/day). Temporal coverage spans 2011 to 2022 (12 years), enabling interannual variability assessment of seasonal pollination suitability. Layers are clipped to the union of NUTS-2 boundaries for DE, BE, and NL before analysis to reduce processing overhead.
+
+### 3.2 SPAM 2020 - Crop Harvested Area
+Crop distribution is represented using SPAM 2020 version 2r0 (IFPRI). SPAM allocates national agricultural statistics to a 5 arc-minute grid using land use, suitability, and irrigation inputs. The variable used is harvested area in hectares per grid cell (TA: all technologies combined). Crops included are rapeseed (RAPE), temperate fruit (TEMF), and sunflower (SUNF). Each raster is reprojected to the E-OBS 0.1 degree grid using bilinear resampling, then normalized by grid cell area (ha) to obtain crop fraction (0 to 1). Values are clamped to [0, 1] to remove reprojection artifacts.
+
+### 3.3 NUTS 2024 Administrative Boundaries
+Administrative boundaries follow the NUTS 2024 classification from Eurostat (GeoPackage, EPSG:3035; https://ec.europa.eu/eurostat/web/nuts). NUTS is a hierarchical regional system:
+
+- NUTS 0 = country level (DE, BE, NL)
+- NUTS 1 = major socio-economic regions
+- NUTS 2 = basic regions for regional policies
+- NUTS 3 = smaller regions for detailed diagnostics
+
+This analysis uses NUTS level 2. The study area includes 61 NUTS-2 regions: 38 in Germany, 12 in the Netherlands, and 11 in Belgium. Boundaries are transformed to EPSG:4326 for raster operations and EPSG:3035 for spatial weights and LISA analysis.
+
+## 4. Methods
+
+### 4.1 Pollination Suitability Index (PSI)
+A daily PSI is computed for each E-OBS grid cell and day using piecewise linear scoring for temperature and precipitation. The temperature score increases linearly from 0 at 10 degC to 1 at 19 degC, remains 1 from 19 to 30 degC, then decreases linearly to 0 at 40 degC. The precipitation score is 1 for <= 1 mm/day, decreases linearly to 0 at 5 mm/day, and is 0 above 5 mm/day. Daily PSI is the product of both scores, constrained to [0, 1]:
+
+`PSI(s, t) = temp_score(TG(s, t)) * rain_score(RR(s, t))`
+
+The temperature parameterization used in code is:
+
+- `t_zero_low = 10`
+- `t_opt_low = 19`
+- `t_opt_high = 30`
+- `t_zero_high = 40`
+
+This aligns with a general bee activity envelope in which flight is feasible roughly between 10 and 40 degC, with highest foraging efficiency commonly reported around 20 to 30 degC. Weather sensitivity of bee activity and production outcomes is also consistent with recent synthesis work on short-term weather impacts on honey production (Vincze et al., 2025).
+
+This continuous formulation captures partial suitability and avoids hard binary cutoffs. Additional variables such as wind speed and radiation were considered but not included to keep the suitability index interpretable and focused on the dominant climatic controls.
+
+### 4.2 Crop-Specific Bloom Windows
+PSI is computed for the full 2011 to 2022 period, then subset by crop bloom windows:
+
+- Rapeseed (RAPE): 01 Apr to 31 May
+- Temperate fruit (TEMF): 05 Apr to 10 May
+- Sunflower (SUNF): 10 Jul to 10 Aug
+
+This avoids misrepresenting sunflower by forcing it into a spring-only baseline.
+
+### 4.3 Temporal Summaries
+Within each crop window and across all years, four pixel-level summaries are computed:
+
+- Mean PSI: average daily suitability across all days and years in the window.
+- Equivalent suitable days per year: summed daily PSI across all window-years divided by number of years.
+- Deficit days per year: equivalent count for `1 - PSI`.
+- Interannual SD: standard deviation of annual mean PSI across the 12 years.
+
+### 4.4 Crop Fraction and Weighted Metrics
+Two composite indicators combine climate suitability with crop distribution:
+
+- Crop-weighted suitability: `psi_mean_crop * crop_frac`.
+- Crop-weighted deficit exposure: `deficit_days_per_year_crop * crop_frac`.
+
+The first indicates overlap of favorable climate and crop presence. The second captures unsuitable climate burden weighted by crop fraction.
+
+### 4.5 Regional Aggregation and Spatial Autocorrelation
+Raster indicators are aggregated to NUTS-2 regions using area-weighted zonal means (`exactextractr`). Spatial autocorrelation is assessed with Global Moran's I and Local Moran's I (LISA) using queen contiguity and row-standardized weights. Significance is tested with 999 Monte Carlo permutations and alpha <= 0.05.
+
+## Analysis: Step 1 - Load everything and check metadata
 
 ### 1.1 Load libraries
 
@@ -87,14 +190,14 @@ st_crs(admin)
 
 **Output:** a short "data QA" note in your report.
 
-## Step 2 — Harmonize study area (DE–BE–NL) + fix geometries
+## Analysis: Step 2 - Harmonize study area (DE-BE-NL) and fix geometries
 
 ### 2.1 Filter Admin polygons to DE/BE/NL
 
 (Your attribute names differ; adjust `CNTR_CODE` / `ISO` / etc.)
 
 ```{r filter-debenl}
-# NUTS 2 = “basic regions for regional policies” (most used in EU reporting/policy)
+# NUTS 2 = basic regions for regional policies (most used in EU reporting/policy)
 nuts_level <- 2
 
 admin_debenl <- admin %>%
@@ -114,7 +217,7 @@ mask_union_4326<- st_union(st_transform(admin_debenl,4326))
 mask_v<- vect(mask_union_4326)
 ```
 
-## Step 3 — Clip E-OBS rasters to DE–BE–NL
+## Analysis: Step 3 - Clip E-OBS rasters to DE-BE-NL
 
 ```{r clip-eobs}
 tg_clip<- mask(crop(tg, mask_v), mask_v)
@@ -134,7 +237,7 @@ writeRaster(tg_clip, fn_tg, overwrite = TRUE)
 writeRaster(rr_clip, fn_rr, overwrite = TRUE)
 ```
 
-## Step 4 — Time index and helper functions
+## Analysis: Step 4 - Time index and helper functions
 
 ```{r time-index}
 tg_dates <- as.Date(time(tg_clip))
@@ -253,7 +356,7 @@ build_region_day_table <- function(psi_stack, dates_stack, admin_sf) {
 }
 ```
 
-## Step 5 — Compute daily PSI once (full period)
+## Analysis: Step 5 - Compute daily PSI once (full period)
 
 Continuous PSI (0-1), then reused for baseline and crop-specific windows.
 
@@ -291,7 +394,7 @@ dir.create(here("data_proc", "rasters"), showWarnings = FALSE, recursive = TRUE)
 writeRaster(psi_daily_full, here("data_proc/rasters/psi_daily_full.tif"), overwrite = TRUE)
 ```
 
-## Step 6 — Baseline window (Apr-May) + crop-specific windows
+## Analysis: Step 6 - Baseline window (Mar-Jun) and crop-specific windows
 
 Equivalent suitable days are continuous sums of daily PSI, not binary day counts.
 
@@ -302,11 +405,11 @@ crop_windows <- tibble(
   end_mmdd   = c("05-31", "05-10", "08-10")
 )
 
-baseline_window <- list(start_mmdd = "04-01", end_mmdd = "05-31")
+baseline_window <- list(start_mmdd = "03-01", end_mmdd = "06-30")
 ```
 
 ```{r summarize-windows}
-# Baseline (kept for comparability)
+# Baseline (Mar-Jun sensitivity baseline)
 baseline_summary <- summarize_window(
   psi_daily_full = psi_daily_full,
   dates_full = dates_full,
@@ -350,7 +453,7 @@ write.csv(window_summary, here("data_proc/tables/window_summary.csv"), row.names
 write.csv(window_summary, here("outputs/tables/window_summary.csv"), row.names = FALSE)
 ```
 
-## Step 7 — SPAM crops and crop fraction/intensity
+## Analysis: Step 7 - SPAM crops and crop fraction/intensity
 
 ```{r spam-load-and-fraction}
 read_spam_crop <- function(crop_code) {
@@ -379,7 +482,7 @@ for (cr in names(spam_crops_ha)) {
 }
 ```
 
-## Step 8 — Crop-weighted suitability and deficit exposure
+## Analysis: Step 8 - Crop-weighted suitability and deficit exposure
 
 `crop_suit_{crop} = psi_mean_{crop} * crop_frac_{crop}` is fraction-based.  
 `crop_bad_{crop} = psi_deficit_days_per_year_{crop} * crop_frac_{crop}` is day-based.  
@@ -397,7 +500,7 @@ for (cr in names(crop_frac)) {
 }
 ```
 
-## Step 9 — Aggregate to admin regions (NUTS2, stable region_id)
+## Analysis: Step 9 - Aggregate to admin regions (NUTS2, stable region_id)
 
 ```{r admin-stats}
 admin_4326 <- st_transform(admin_debenl, crs(template_r))
@@ -429,7 +532,7 @@ dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
 write.csv(st_drop_geometry(admin_stats), here("data_proc/tables/admin_pollination_stats.csv"), row.names = FALSE)
 ```
 
-## Step 10 — Global Moran’s I + Local Moran (LISA) per crop metric
+## Analysis: Step 10 - Global Moran's I and Local Moran (LISA) per crop metric
 
 ```{r spatial-stats}
 library(sfdep)
@@ -533,7 +636,7 @@ st_write(admin_stats_3035, here("data_proc/vectors/admin_stats_lisa.gpkg"), dele
 write.csv(clustering_tbl, here("data_proc/tables/crop_clustering_comparison.csv"), row.names = FALSE)
 ```
 
-## Step 11 — Maps
+## Analysis: Step 11 - Maps
 
 ```{r maps-deliverables}
 library(tmap)
@@ -548,10 +651,10 @@ admin_lvl0_borders <- admin_debenl %>%
   st_make_valid() %>%
   st_transform(4326)
 
-# Baseline maps
-plot_and_save_raster(baseline_summary$mean, "Mean PSI (Apr-May baseline)", here("outputs/maps/map_psi_mean.png"), admin_borders, admin_lvl0_borders)
-plot_and_save_raster(baseline_summary$equiv_days_per_year, "Equivalent suitable days/year (Apr-May baseline)", here("outputs/maps/map_psi_days.png"), admin_borders, admin_lvl0_borders)
-plot_and_save_raster(baseline_summary$interannual_sd, "Interannual PSI SD (Apr-May baseline)", here("outputs/maps/map_psi_interannual_sd.png"), admin_borders, admin_lvl0_borders)
+# Baseline maps (Mar-Jun)
+plot_and_save_raster(baseline_summary$mean, "Mean PSI (Mar-Jun baseline)", here("outputs/maps/map_psi_mean.png"), admin_borders, admin_lvl0_borders)
+plot_and_save_raster(baseline_summary$equiv_days_per_year, "Equivalent suitable days/year (Mar-Jun baseline)", here("outputs/maps/map_psi_days.png"), admin_borders, admin_lvl0_borders)
+plot_and_save_raster(baseline_summary$interannual_sd, "Interannual PSI SD (Mar-Jun baseline)", here("outputs/maps/map_psi_interannual_sd.png"), admin_borders, admin_lvl0_borders)
 
 # Crop-specific maps
 for (cr in compare_crops) {
@@ -576,7 +679,7 @@ for (cr in compare_crops) {
 }
 ```
 
-## Step 12 — Time-series plots for 2020 crop windows (top 12 by crop_bad)
+## Analysis: Step 12 - Time-series plots for 2020 crop windows (top 12 by crop_bad)
 
 ```{r region-day-timeseries}
 library(ggplot2)
@@ -626,7 +729,7 @@ for (i in seq_len(nrow(crop_windows))) {
     labs(
       x = "Date",
       y = "Daily regional mean PSI",
-      title = sprintf("Daily PSI by region (top 12 by %s bad) — %s to %s, 2020", cr, st_mmdd, en_mmdd)
+      title = sprintf("Daily PSI by region (top 12 by %s bad) - %s to %s, 2020", cr, st_mmdd, en_mmdd)
     ) +
     theme_minimal() +
     theme(legend.position = "bottom")
@@ -638,7 +741,7 @@ for (i in seq_len(nrow(crop_windows))) {
 }
 ```
 
-## Step 13 — Comparison and ranking tables
+## Analysis: Step 13 - Comparison and ranking tables
 
 ```{r ranking-tables}
 dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
@@ -692,3 +795,35 @@ crop_exposure_summary <- tibble(
 write.csv(crop_exposure_summary, here("data_proc/tables/crop_exposure_summary.csv"), row.names = FALSE)
 write.csv(crop_exposure_summary, here("outputs/tables/crop_exposure_summary.csv"), row.names = FALSE)
 ```
+
+## 5. Results
+
+### 5.1 Baseline Climate Suitability (Q1)
+The mean PSI map for the Mar-Jun baseline window reveals a clear spatial gradient across the study region. Eastern and north-eastern Germany (Brandenburg, Sachsen, Mecklenburg-Vorpommern) shows the highest mean PSI values, indicating that temperature and rainfall conditions are most frequently within the suitable range during the spring bloom period. The coastal north (Schleswig-Holstein, NL north) and the Alpine south (Bayern, Baden-Wurttemberg high elevations) show reduced suitability, the former driven by excess precipitation and cool temperatures, the latter by late-season cold. The equivalent suitable days map mirrors this pattern: eastern German regions average approximately 20-25 suitable days per Mar-Jun season, while Belgium and the Netherlands average 10-15. For Lars, this baseline immediately stratifies the study region into a higher-suitability eastern tier and a lower-suitability western tier, informing regional premium structure. For Anneke, it identifies the eastern regions as potential benchmarks for best-practice pollination conditions.
+
+The interannual SD map shows that instability is moderate (0.06-0.14) and spatially diffuse, with slightly elevated variability in central Germany. The limited spread across 12 years constrains the confidence of this estimate, but the pattern suggests that the eastern high-suitability zone is not only better on average but also somewhat more consistent, which is a secondary advantage for both personas.
+
+### 5.2 Rapeseed - Crop Distribution and Exposure (Q2)
+Rapeseed is the most spatially concentrated crop in the SPAM data, with the highest harvested fractions in north-eastern Germany (Mecklenburg-Vorpommern, Brandenburg, Sachsen-Anhalt) reaching up to 10-12% of cell area. Belgium shows scattered smaller concentrations. The Netherlands has minimal rapeseed presence. The crop-weighted suitability map confirms that north-eastern Germany holds the best combination of high PSI and high crop intensity, and these are Anneke's primary demonstration-plot candidate regions. The crop-weighted deficit exposure map tells a more sobering story for Lars: despite relatively good average PSI, the north-east also accumulates the highest absolute deficit exposure simply because it has so much crop area. Mecklenburg-Vorpommern carries the highest regional deficit burden, with multiple adjacent regions also elevated, which the LISA analysis confirms as a statistically significant High-High cluster (p < 0.05, Moran's I = 0.577). The Netherlands shows a Low-Low cluster, reflecting both low rapeseed presence and moderate climate conditions. This asymmetry, where the best suitability and the highest risk co-occur in the same zone due to crop concentration, is a key finding for crop insurance pricing.
+
+### 5.3 Temperate Fruit - Crop Distribution and Exposure (Q2)
+Temperate fruit cultivation is geographically distinct from rapeseed: the highest TEMF fractions appear in the Rhine-Maas corridor straddling the NL/BE border, and in southern Germany (Bodensee region, Rhine valley). Eastern Germany, which dominates the rapeseed picture, is largely absent from TEMF maps. The PSI window for TEMF (5 Apr - 10 May) is slightly narrower and earlier, producing somewhat different suitability patterns: southern Germany, though appearing suboptimal in the rapeseed window, shows adequate PSI for the shorter fruit-bloom window. The deficit exposure map highlights the NL/BE Rhine-Maas cluster and the Bodensee area as the two primary risk zones for TEMF, which is useful for Anneke because her cooperative spans this exact cross-border area. The LISA map shows a localized High-High cluster at the NL/BE border and an isolated High-High outlier in southern Bavaria, with the rest of the study area not significant. Moran's I is moderate (0.295, p = 0.01), suggesting weaker overall clustering for TEMF than for rapeseed and reflecting TEMF's more fragmented spatial distribution.
+
+### 5.4 Sunflower - Crop Distribution and Exposure (Q2)
+Sunflower has a markedly different spatial and temporal profile. The SPAM data shows very low sunflower fractions across most of the study region; only a few cells in eastern Germany and isolated areas near the Belgian/French border register non-trivial values. The sunflower bloom window (10 Jul - 10 Aug) falls in mid-summer when temperatures across the study region are systematically higher, yielding high PSI values almost everywhere, and equivalent suitable days typically exceed 20 per season. As a result, crop-weighted deficit exposure values are near-zero for most regions. The LISA map shows only a small High-High cluster in eastern Germany (Mecklenburg-Vorpommern, Brandenburg) driven by the combination of above-average crop presence and the slightly drier, hotter continental conditions that occasionally push temperatures toward the upper suitability limit. For Lars, sunflower carries low systematic climate risk across the study area. For Anneke, the more relevant concern is local hive density and crop-pollinator synchronization, which falls outside the scope of this analysis.
+
+### 5.5 Spatial Clustering Summary (Q3)
+Across all three crops, crop-weighted suitability and deficit exposure show statistically significant positive spatial autocorrelation (all Global Moran's I > 0.29, p <= 0.01). This confirms that climate-driven pollination risk is not randomly distributed but structured, and adjacent regions tend to share similar exposure levels. For Anneke this means that regional advisory campaigns are more efficient than farm-by-farm outreach: targeting a High-High cluster reaches multiple high-risk farms simultaneously. For Lars, it means that regional portfolio diversification does not fully hedge climate risk because holding policies in multiple regions within the same cluster does not reduce correlated seasonal exposure. Rapeseed shows the strongest clustering (I = 0.577), making it the crop where spatial targeting delivers the greatest analytical leverage.
+
+## 6. Conclusions
+Spring pollination climate across DE-BE-NL is spatially structured and crop-dependent. Eastern Germany consistently offers the most suitable temperature and rainfall conditions during spring bloom windows, while the coastal north and Alpine south face greater climatic constraints. However, because rapeseed cultivation is also concentrated in the east, the same regions that benefit climatically also accumulate the highest absolute crop-weighted deficit exposure, which has direct implications for risk assessment and advisory prioritization. Temperate fruit and sunflower show different geographic profiles, with fruit risk concentrated at the NL/BE border and sunflower carrying low systematic risk across the study area. Spatial autocorrelation is strong and significant for all crops, validating a regional clustering approach over individual farm-level analysis. For Lars Hoffmann, the LISA maps and ranking tables provide the spatial risk stratification needed to differentiate regional premiums. For Anneke Visser, the crop-weighted suitability surfaces identify benchmark zones and priority intervention clusters for advisory deployment.
+
+## 7. References
+- Vicens, N., and Bosch, J. (2000). Weather patterns and visitation rates of honey bees and carpenter bees on almond flowers. *Annals of the Entomological Society of America*, 93(2), 240-246.
+- Blazyte-Cereskiene, L., Vaitkeviciene, G., Venskutonyte, S., and Buda, V. (2010). Honey bee foraging behaviour in oilseed rape crops: The effect of weather conditions. *Zemdirbyste-Agriculture*, 97(3), 93-100.
+- Klein, A. M., Vaissiere, B. E., Cane, J. H., Steffan-Dewenter, I., Cunningham, S. A., Kremen, C., and Tscharntke, T. (2007). Importance of pollinators in changing landscapes for world crops. *Proceedings of the Royal Society B*, 274(1608), 303-313.
+- Lawson, D. A., and Rands, S. A. (2019). The effects of rainfall on plant-pollinator interactions. *Arthropod-Plant Interactions*, 13, 561-570. https://doi.org/10.1007/s11829-019-09686-z
+- Vincze, C., Leelossy, A., Zajacz, E., et al. (2025). A review of short-term weather impacts on honey production. *International Journal of Biometeorology*, 69, 303-317. https://doi.org/10.1007/s00484-024-02824-0
+- Cornes, R. C., van der Schrier, G., van den Besselaar, E. J. M., and Jones, P. D. (2018). An Ensemble Version of the E-OBS Temperature and Precipitation Data Sets. *Journal of Geophysical Research: Atmospheres*, 123, 9391-9409. https://doi.org/10.1029/2017JD028200
+- You, L., Wood-Sichra, U., Fritz, S., Guo, Z., See, L., and Koo, J. (2014). Spatial Production Allocation Model (SPAM) 2005 v2.0. IFPRI. https://doi.org/10.7910/DVN/DHXBJX
+- Eurostat. NUTS - Nomenclature of Territorial Units for Statistics. https://ec.europa.eu/eurostat/web/nuts
