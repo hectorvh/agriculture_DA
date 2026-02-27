@@ -262,10 +262,18 @@ psi_days_per_year <- psi_days / n_years_am
 psi_deficit_days_per_year <- psi_deficit_days / n_years_am
 ```
 
-### 6.5 Variability / instability (SD)
+### 6.5 Interannual variability (SD across yearly Apr-May means)
 
 ```{r psi-sd}
-psi_sd<- app(psi_daily, sd, na.rm=TRUE)
+years_am <- unique(format(tg_dates[sel_am], "%Y"))
+mean_am_list <- list()
+for (y in years_am) {
+  idx_y <- which(format(tg_dates[sel_am], "%Y") == y)
+  mean_am_list[[y]] <- app(psi_daily[[idx_y]], mean, na.rm = TRUE)
+}
+psi_interannual_sd <- app(terra::rast(mean_am_list), sd, na.rm = TRUE)
+rm(mean_am_list)
+gc()
 ```
 
 Save them:
@@ -276,7 +284,7 @@ writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
 writeRaster(psi_deficit_days, here("data_proc/rasters/psi_deficit_days_am.tif"), overwrite=TRUE)
 writeRaster(psi_days_per_year, here("data_proc/rasters/psi_days_per_year_am.tif"), overwrite=TRUE)
 writeRaster(psi_deficit_days_per_year, here("data_proc/rasters/psi_deficit_days_per_year_am.tif"), overwrite=TRUE)
-writeRaster(psi_sd,   here("data_proc/rasters/psi_sd_am.tif"), overwrite=TRUE)
+writeRaster(psi_interannual_sd, here("data_proc/rasters/psi_interannual_sd_am.tif"), overwrite=TRUE)
 ```
 
 ```{r psi-window-context}
@@ -370,7 +378,7 @@ psi_mean_am <- rast(here("data_proc/rasters/psi_mean_am.tif"))
 psi_days_am <- rast(here("data_proc/rasters/psi_days_am.tif"))
 psi_deficit_days_am <- rast(here("data_proc/rasters/psi_deficit_days_am.tif"))
 psi_days_per_year_am <- rast(here("data_proc/rasters/psi_days_per_year_am.tif"))
-psi_sd_am   <- rast(here("data_proc/rasters/psi_sd_am.tif"))
+psi_interannual_sd_am <- rast(here("data_proc/rasters/psi_interannual_sd_am.tif"))
 tg_debenl   <- rast(here("data_proc/rasters/tg_debenl.tif"))
 rr_debenl   <- rast(here("data_proc/rasters/rr_debenl.tif"))
 psi_daily   <- rast(here("data_proc/rasters/psi_daily.tif"))   # if you saved it too
@@ -523,7 +531,7 @@ admin_stats<- admin_4326%>%
     psi_deficit = exact_extract(psi_deficit_days, ., "mean"),
     psi_days_per_year = exact_extract(psi_days_per_year, ., "mean"),
     psi_deficit_per_year = exact_extract(psi_deficit_days_per_year, ., "mean"),
-    psi_sd   = exact_extract(psi_sd,             ., "mean"),
+    psi_interannual_sd = exact_extract(psi_interannual_sd, ., "mean"),
     rape_frac= exact_extract(rape_frac,          ., "mean"),
     rape_suit= exact_extract(rape_suit,          ., "mean"),
     rape_bad = exact_extract(rape_bad_exposure,  ., "mean"),
@@ -783,29 +791,41 @@ save_map <- function(map_obj, filename) {
   tmap_save(map_obj, filename = filename, width = 10, height = 7)
 }
 
+admin_4326 <- st_transform(admin_debenl, 4326)
+
 map_psi_mean <- tm_shape(psi_mean) +
   tm_raster(title = "PSI mean") +
+  tm_shape(admin_4326) +
+  tm_borders(col = "white", lwd = 0.5) +
   tm_layout(title = "Mean PSI (Apr-May)", frame = FALSE)
 
 map_psi_days <- tm_shape(psi_days_per_year) +
   tm_raster(title = "Eq. suitable days/year") +
+  tm_shape(admin_4326) +
+  tm_borders(col = "white", lwd = 0.5) +
   tm_layout(title = "Mean equivalent suitable days per Apr-May season", frame = FALSE)
 
-map_psi_sd <- tm_shape(psi_sd) +
-  tm_raster(title = "PSI SD") +
-  tm_layout(title = "PSI variability (SD, Apr-May)", frame = FALSE)
+map_psi_interannual_sd <- tm_shape(psi_interannual_sd) +
+  tm_raster(title = "Interannual PSI SD") +
+  tm_shape(admin_4326) +
+  tm_borders(col = "white", lwd = 0.5) +
+  tm_layout(title = "PSI interannual variability (SD, Apr-May means)", frame = FALSE)
 
 map_rape_frac <- tm_shape(rape_frac) +
   tm_raster(title = "Rape fraction") +
+  tm_shape(admin_4326) +
+  tm_borders(col = "white", lwd = 0.5) +
   tm_layout(title = "Rapeseed fraction/intensity", frame = FALSE)
 
 map_rape_suit <- tm_shape(rape_suit) +
   tm_raster(title = "Weighted suitability") +
+  tm_shape(admin_4326) +
+  tm_borders(col = "white", lwd = 0.5) +
   tm_layout(title = "Crop-weighted suitability", frame = FALSE)
 
 save_map(map_psi_mean, here("outputs/maps/map_psi_mean.png"))
 save_map(map_psi_days, here("outputs/maps/map_psi_days.png"))
-save_map(map_psi_sd, here("outputs/maps/map_psi_sd.png"))
+save_map(map_psi_interannual_sd, here("outputs/maps/map_psi_interannual_sd.png"))
 save_map(map_rape_frac, here("outputs/maps/map_rape_frac.png"))
 save_map(map_rape_suit, here("outputs/maps/map_rape_suit.png"))
 
@@ -823,88 +843,99 @@ map_psi_mean
 
 ```{r region-day-timeseries}
 library(dplyr)
-library(tidyr)
-library(exactextractr)
 library(ggplot2)
 library(here)
 
 dir.create(here("outputs", "plots"), showWarnings = FALSE, recursive = TRUE)
-dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
-
-admin_ts <- st_transform(admin_debenl, crs(psi_daily))
-admin_labels <- st_drop_geometry(admin_ts) %>%
+if (!exists("psi_region_day", inherits = FALSE)) {
+  psi_region_day <- read.csv(
+    here("data_proc", "tables", "psi_region_day.csv"),
+    stringsAsFactors = FALSE
+  )
+}
+psi_region_day <- psi_region_day %>%
   mutate(
-    region_id = as.character(NUTS_ID)
+    region_id = as.character(region_id),
+    region_label = as.character(region_label),
+    date = as.Date(date),
+    psi_daily_mean = as.numeric(psi_daily_mean)
   )
 
-label_candidates <- c("NAME_LATN", "NUTS_NAME", "NAME_ENGL")
-label_col <- label_candidates[label_candidates %in% names(admin_labels)]
-if (length(label_col) > 0) {
-  admin_labels$region_label <- as.character(admin_labels[[label_col[1]]])
+if (!exists("admin_stats_3035", inherits = FALSE)) {
+  stats_tbl <- read.csv(
+    here("data_proc", "tables", "admin_pollination_stats.csv"),
+    stringsAsFactors = FALSE
+  )
 } else {
-  admin_labels$region_label <- admin_labels$region_id
+  stats_tbl <- if (inherits(admin_stats_3035, "sf")) {
+    sf::st_drop_geometry(admin_stats_3035)
+  } else {
+    admin_stats_3035
+  }
 }
+stats_tbl <- stats_tbl %>%
+  mutate(region_id = as.character(region_id))
 
-daily_wide <- exact_extract(psi_daily, admin_ts, "mean") %>% as_tibble()
-if (nrow(daily_wide) != nrow(admin_labels)) {
-  stop("Row mismatch between extracted daily summaries and admin labels.")
-}
-daily_wide$region_id <- admin_labels$region_id
-
-layer_lookup <- tibble(
-  layer = paste0("mean.", names(psi_daily)),   # <-- key fix
-  layer_index = seq_len(nlyr(psi_daily))
-)
-
-# dates: prefer real time(psi_daily); fallback to tg_dates[sel_am]
-psi_dates <- suppressWarnings(as.Date(time(psi_daily)))
-if (length(psi_dates) != nlyr(psi_daily) || all(is.na(psi_dates))) {
-  psi_dates <- tg_dates[sel_am]  # assuming Apr–May window
-}
-layer_lookup$date <- psi_dates
-
-psi_region_day <- daily_wide %>%
-  pivot_longer(-region_id, names_to = "layer", values_to = "psi_daily_mean") %>%
-  left_join(layer_lookup, by = "layer") %>%
-  left_join(admin_labels %>% select(region_id, region_label), by = "region_id")
-
-write.csv(psi_region_day, here("data_proc/tables/psi_region_day.csv"), row.names = FALSE)
-
-top_regions <- admin_stats_3035 %>%
-  st_drop_geometry() %>%
-  mutate(region_id = as.character(region_id)) %>%
+top_regions <- stats_tbl %>%
   filter(is.finite(rape_bad)) %>%
   arrange(desc(rape_bad)) %>%
   slice_head(n = 12) %>%
   pull(region_id)
 
 plot_df <- psi_region_day %>%
-  filter(region_id %in% top_regions)
+  filter(
+    region_id %in% top_regions,
+    date >= as.Date("2020-03-01"),
+    date <= as.Date("2020-06-30")
+  )
 
-if (all(is.na(plot_df$date))) {
-  p_ts <- ggplot(plot_df, aes(x = layer_index, y = psi_daily_mean, color = region_label, group = region_label)) +
-    geom_line(alpha = 0.8) +
-    labs(
-      x = "Day index (Apr-May)",
-      y = "Daily regional mean PSI",
-      title = "Daily PSI by region (top 12 by rape_bad)"
-    ) +
-    theme_minimal() +
-    theme(legend.position = "bottom")
-} else {
-  p_ts <- ggplot(plot_df, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
-    geom_line(alpha = 0.8) +
-    labs(
-      x = "Date",
-      y = "Daily regional mean PSI",
-      title = "Daily PSI by region (top 12 by rape_bad)"
-    ) +
-    theme_minimal() +
-    theme(legend.position = "bottom")
+if (nrow(plot_df) == 0) {
+  stop("No rows after filtering top regions and Mar-Jun 2020 window. Check region_id alignment and date values in psi_region_day.")
 }
 
-ggsave(here("outputs/plots/ts_psi_daily_top12_rape_bad.png"), p_ts, width = 10, height = 6, dpi = 300)
+p_ts <- ggplot(plot_df, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
+  geom_line(alpha = 0.85) +
+  labs(
+    x = "Date",
+    y = "Daily regional mean PSI",
+    title = "Daily PSI by region (top 12 by rape_bad) — Mar-Jun 2020"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(here("outputs/plots/ts_psi_daily_top12_rape_bad_MarJun_2020.png"), p_ts, width = 10, height = 6, dpi = 300)
 p_ts
+
+# Second plot: full-year 2020 for top 10 regions by rape_bad
+top_regions_10 <- stats_tbl %>%
+  filter(is.finite(rape_bad)) %>%
+  arrange(desc(rape_bad)) %>%
+  slice_head(n = 10) %>%
+  pull(region_id)
+
+plot_df_2020 <- psi_region_day %>%
+  filter(
+    region_id %in% top_regions_10,
+    date >= as.Date("2020-01-01"),
+    date <= as.Date("2020-12-31")
+  )
+
+if (nrow(plot_df_2020) == 0) {
+  stop("No rows after filtering top 10 regions and Jan-Dec 2020 window. Check region_id alignment and date values in psi_region_day.")
+}
+
+p_ts_2020 <- ggplot(plot_df_2020, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
+  geom_line(alpha = 0.85) +
+  labs(
+    x = "Date",
+    y = "Daily regional mean PSI",
+    title = "Daily PSI by region (top 10 by rape_bad) — Jan-Dec 2020"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(here("outputs/plots/ts_psi_daily_top10_rape_bad_2020.png"), p_ts_2020, width = 10, height = 6, dpi = 300)
+p_ts_2020
 ```
 
 ### 12.3 Ranking tables (policy relevance)
@@ -934,16 +965,16 @@ top_rape_suit <- stats_tbl %>%
   arrange(desc(rape_suit)) %>%
   slice_head(n = 10)
 
-top_psi_sd <- stats_tbl %>%
-  filter(is.finite(psi_sd)) %>%
-  arrange(desc(psi_sd)) %>%
+top_psi_interannual_sd <- stats_tbl %>%
+  filter(is.finite(psi_interannual_sd)) %>%
+  arrange(desc(psi_interannual_sd)) %>%
   slice_head(n = 10)
 
 write.csv(top_rape_bad, here("outputs/tables/top10_rape_bad.csv"), row.names = FALSE)
 write.csv(top_rape_suit, here("outputs/tables/top10_rape_suit.csv"), row.names = FALSE)
-write.csv(top_psi_sd, here("outputs/tables/top10_psi_sd.csv"), row.names = FALSE)
+write.csv(top_psi_interannual_sd, here("outputs/tables/top10_psi_interannual_sd.csv"), row.names = FALSE)
 
 top_rape_bad %>% select(any_of(c(id_cols, "rape_bad")))
 top_rape_suit %>% select(any_of(c(id_cols, "rape_suit")))
-top_psi_sd %>% select(any_of(c(id_cols, "psi_sd")))
+top_psi_interannual_sd %>% select(any_of(c(id_cols, "psi_interannual_sd")))
 ```
