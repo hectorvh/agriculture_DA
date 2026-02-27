@@ -338,6 +338,16 @@ for (i in seq_len(nrow(crop_windows))) {
   writeRaster(crop_psi[[cr]]$deficit_days_per_year, here("data_proc/rasters", sprintf("psi_deficit_days_per_year_%s.tif", cr)), overwrite = TRUE)
   writeRaster(crop_psi[[cr]]$interannual_sd, here("data_proc/rasters", sprintf("psi_interannual_sd_%s.tif", cr)), overwrite = TRUE)
 }
+
+window_summary <- crop_windows %>%
+  mutate(
+    n_days = purrr::map_int(crop, ~ crop_psi[[.x]]$n_days),
+    n_years = purrr::map_int(crop, ~ crop_psi[[.x]]$n_years)
+  )
+dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
+write.csv(window_summary, here("data_proc/tables/window_summary.csv"), row.names = FALSE)
+write.csv(window_summary, here("outputs/tables/window_summary.csv"), row.names = FALSE)
 ```
 
 ## Step 7 — SPAM crops and crop fraction/intensity
@@ -426,6 +436,7 @@ write.csv(st_drop_geometry(admin_stats), here("data_proc/tables/admin_pollinatio
 ```{r spatial-stats}
 library(sfdep)
 
+set.seed(123)
 admin_stats_3035 <- st_transform(admin_stats, 3035)
 compare_crops <- crop_windows$crop
 compare_metrics <- c("crop_bad", "crop_suit")
@@ -559,6 +570,8 @@ for (cr in compare_crops) {
   if (lisa_col %in% names(admin_stats_3035)) {
     map_lisa <- tm_shape(admin_stats_3035) +
       tm_polygons(lisa_col, title = "LISA cluster", colorNA = "grey85") +
+      tm_shape(st_transform(admin_lvl0_borders, 3035)) +
+      tm_borders(col = "black", lwd = 1.2) +
       tm_layout(title = sprintf("LISA clusters (%s crop_bad)", cr), frame = FALSE)
     tmap_save(map_lisa, filename = here("outputs/maps", sprintf("map_lisa_%s_bad.png", cr)), width = 10, height = 7)
   }
@@ -581,7 +594,7 @@ psi_region_day_full <- build_region_day_table(psi_daily_full, dates_full, admin_
     date = as.Date(date),
     psi_daily_mean = as.numeric(psi_daily_mean)
   )
-write.csv(psi_region_day_full, here("data_proc/tables/psi_region_day_full.csv"), row.names = FALSE)
+write.csv(psi_region_day_full %>% select(-layer), here("data_proc/tables/psi_region_day_full.csv"), row.names = FALSE)
 
 for (i in seq_len(nrow(crop_windows))) {
   cr <- crop_windows$crop[i]
@@ -591,7 +604,7 @@ for (i in seq_len(nrow(crop_windows))) {
   psi_region_day <- psi_region_day_full %>%
     filter(select_window_by_mmdd(date, st_mmdd, en_mmdd))
 
-  write.csv(psi_region_day, here("data_proc/tables", sprintf("psi_region_day_%s.csv", cr)), row.names = FALSE)
+  write.csv(psi_region_day %>% select(-layer), here("data_proc/tables", sprintf("psi_region_day_%s.csv", cr)), row.names = FALSE)
 
   top_regions <- admin_stats_tbl %>%
     filter(is.finite(.data[[paste0("crop_bad_", cr)]])) %>%
@@ -661,4 +674,23 @@ for (cr in compare_crops) {
 crop_exposure_comparison <- bind_rows(ranking_rows)
 write.csv(crop_exposure_comparison, here("data_proc/tables/crop_exposure_comparison.csv"), row.names = FALSE)
 write.csv(crop_exposure_comparison, here("outputs/tables/crop_exposure_comparison.csv"), row.names = FALSE)
+
+# One-row-per-crop summary for cross-crop comparison (mean_bad, p90_bad, mean_suit)
+crop_exposure_summary <- tibble(
+  crop = compare_crops,
+  mean_bad = vapply(compare_crops, function(cr) {
+    x <- admin_stats_tbl[[paste0("crop_bad_", cr)]]
+    mean(x[is.finite(x)], na.rm = TRUE)
+  }, numeric(1)),
+  p90_bad = vapply(compare_crops, function(cr) {
+    x <- admin_stats_tbl[[paste0("crop_bad_", cr)]]
+    quantile(x[is.finite(x)], probs = 0.9, na.rm = TRUE, names = FALSE)
+  }, numeric(1)),
+  mean_suit = vapply(compare_crops, function(cr) {
+    x <- admin_stats_tbl[[paste0("crop_suit_", cr)]]
+    mean(x[is.finite(x)], na.rm = TRUE)
+  }, numeric(1))
+)
+write.csv(crop_exposure_summary, here("data_proc/tables/crop_exposure_summary.csv"), row.names = FALSE)
+write.csv(crop_exposure_summary, here("outputs/tables/crop_exposure_summary.csv"), row.names = FALSE)
 ```
