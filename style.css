@@ -1,0 +1,151 @@
+/* ============================================================
+   style.css — Pollination Suitability Mapping for Crops
+   Place this file in the same folder as main.qmd
+   ============================================================ */
+
+/* --- typography & body --- */
+body {
+  font-family: 'Georgia', serif;
+  font-size: 16px;
+  line-height: 1.72;
+  color: #1a1a1a;
+}
+
+h1.title {
+  font-size: 2rem;
+  color: #003366;
+}
+
+h2 {
+  color: #003366;
+  border-bottom: 1px solid #ccd6e0;
+  padding-bottom: 6px;
+  margin-top: 48px;
+}
+
+h3 {
+  color: #1a3a5c;
+  margin-top: 28px;
+}
+
+h4 {
+  color: #444;
+  font-style: italic;
+}
+
+/* --- blockquote (formula display) --- */
+blockquote {
+  border-left: 4px solid #003366;
+  padding: 8px 16px;
+  background: #f5f8fc;
+  color: #333;
+  font-style: italic;
+  margin: 16px 0;
+}
+
+/* --- tables --- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 0.91rem;
+}
+
+thead th {
+  background: #003366;
+  color: #fff;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+tbody td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #dde;
+}
+
+tbody tr:nth-child(even) td {
+  background: #f5f8fc;
+}
+
+/* --- figure captions --- */
+figcaption, .figure-caption {
+  text-align: center;
+  font-size: 0.82rem;
+  color: #555;
+  font-style: italic;
+  margin-top: 6px;
+}
+
+/* --- persona box --- */
+.persona-box {
+  background: #f0f6ff;
+  border-left: 4px solid #003366;
+  padding: 16px 20px;
+  margin: 16px 0 24px;
+  border-radius: 0 4px 4px 0;
+}
+
+/* --- story box --- */
+.story-box {
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  padding: 12px 18px;
+  margin: 10px 0;
+  border-radius: 4px;
+}
+
+.story-box strong {
+  display: block;
+  font-size: 0.83rem;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+/* --- research question box --- */
+.rq-box {
+  background: #fff8e1;
+  border-left: 4px solid #e6a000;
+  padding: 11px 18px;
+  margin: 10px 0;
+  border-radius: 0 4px 4px 0;
+}
+
+/* --- section intro box --- */
+.sect-intro {
+  background: #f0f6f0;
+  border-left: 4px solid #2e7d32;
+  padding: 11px 18px;
+  margin-bottom: 18px;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.95rem;
+}
+
+/* --- code fold toggle styling --- */
+details.code-fold summary {
+  background: #1e3a5c;
+  color: #e8eef8;
+  padding: 8px 14px;
+  border-radius: 4px 4px 0 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+details.code-fold[open] summary {
+  background: #003366;
+}
+
+details.code-fold pre {
+  background: #1a2942;
+  color: #c9d7e8;
+  border-radius: 0 0 4px 4px;
+  margin-top: 0;
+}
+
+/* --- print: hide code, keep maps --- */
+@media print {
+  details.code-fold { display: none; }
+  .quarto-figure { page-break-inside: avoid; }
+}

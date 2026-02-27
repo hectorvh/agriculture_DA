@@ -25,6 +25,12 @@ She also needs hotspot detection to design cluster-based advisory campaigns acro
 - NUTS 2024 boundaries (Eurostat GISCO): https://ec.europa.eu/eurostat/web/gisco/geodata/statistical-units/territorial-units-statistics
 - SPAM methodology reference: https://doi.org/10.7910/DVN/DHXBJX
 
+## Data Setup
+
+Download the `data_raw/` folder from:
+
+https://drive.google.com/file/d/1TLU2tMSJ6exEXXrR_FwvIL6va9WXZlz6/view?usp=drive_link
+
 ## How To Run
 
 ```bash
