@@ -134,55 +134,130 @@ writeRaster(tg_clip, fn_tg, overwrite = TRUE)
 writeRaster(rr_clip, fn_rr, overwrite = TRUE)
 ```
 
-## Step 4 — Select the time window (April–May)
+## Step 4 — Time index and helper functions
 
-E-OBS NetCDF usually has a time index. Two robust approaches:
-
-### 4.1 If time labels exist (best)
-
-```{r check-time}
-head(time(tg_clip), 20)  # first few dates; use time(tg_clip) for full vector
-```
-
-If dates exist, filter by month:
-
-```{r filter-april-may}
+```{r time-index}
 tg_dates <- as.Date(time(tg_clip))
 rr_dates <- as.Date(time(rr_clip))
 
 if (length(tg_dates) != nlyr(tg_clip) || any(is.na(tg_dates))) {
-  stop("TG time index is missing or invalid; cannot filter windows.")
+  stop("TG time index is missing or invalid.")
 }
 if (length(rr_dates) != nlyr(rr_clip) || any(is.na(rr_dates))) {
-  stop("RR time index is missing or invalid; cannot filter windows.")
+  stop("RR time index is missing or invalid.")
 }
 if (!identical(tg_dates, rr_dates)) {
-  stop("TG and RR dates are not aligned. Harmonize time layers before PSI.")
+  stop("TG and RR dates are not aligned.")
 }
-
-sel_am <- which(format(tg_dates, "%m") %in% c("04", "05"))               # main window
-sel_mj <- which(format(tg_dates, "%m") %in% c("03", "04", "05", "06"))   # sensitivity
-sel_yr <- seq_along(tg_dates)                                             # annual context
-
-if (length(sel_am) == 0) stop("No April-May layers found.")
-if (length(sel_mj) == 0) stop("No March-June layers found.")
-
-tg_am <- tg_clip[[sel_am]]
-rr_am <- rr_clip[[sel_am]]
+dates_full <- tg_dates
 ```
 
-## Step 5 — Compute daily suitability (PSI) from E-OBS
+```{r helper-functions}
+library(tibble)
 
-Use a continuous PSI in [0, 1] (instead of binary 0/1).
+select_window_by_mmdd <- function(dates, start_mmdd, end_mmdd) {
+  years_chr <- format(dates, "%Y")
+  start_dates <- as.Date(paste0(years_chr, "-", start_mmdd))
+  end_dates <- as.Date(paste0(years_chr, "-", end_mmdd))
+  as.logical(!is.na(start_dates) & !is.na(end_dates) & dates >= start_dates & dates <= end_dates)
+}
 
-Scoring assumptions (piecewise linear):
+sum_or_na <- function(x) {
+  if (all(is.na(x))) return(NA_real_)
+  sum(x, na.rm = TRUE)
+}
 
-- Temperature score = 1.0 in 12-25 C, declines to 0 at 8 C and 30 C.
-- Rain score = 1.0 for RR <= 1 mm/day, declines to 0 at RR >= 5 mm/day.
+summarize_window <- function(psi_daily_full, dates_full, start_mmdd, end_mmdd) {
+  sel <- select_window_by_mmdd(dates_full, start_mmdd, end_mmdd)
+  if (!any(sel)) {
+    stop("No layers selected for window ", start_mmdd, " to ", end_mmdd)
+  }
 
-### 5.1 Continuous suitability per day (Apr-May)
+  psi_w <- psi_daily_full[[which(sel)]]
+  dates_w <- dates_full[sel]
+  years_w <- unique(format(dates_w, "%Y"))
 
-```{r psi-daily}
+  mean_r <- app(psi_w, mean, na.rm = TRUE)
+  equiv_days_r <- app(psi_w, sum_or_na)
+  deficit_days_r <- app(1 - psi_w, sum_or_na)
+  equiv_days_per_year_r <- equiv_days_r / length(years_w)
+  deficit_days_per_year_r <- deficit_days_r / length(years_w)
+
+  yearly_means <- list()
+  for (yy in years_w) {
+    idx_y <- which(format(dates_w, "%Y") == yy)
+    yearly_means[[yy]] <- app(psi_w[[idx_y]], mean, na.rm = TRUE)
+  }
+  interannual_sd_r <- app(terra::rast(yearly_means), sd, na.rm = TRUE)
+
+  list(
+    mean = mean_r,
+    equiv_days = equiv_days_r,
+    equiv_days_per_year = equiv_days_per_year_r,
+    deficit_days = deficit_days_r,
+    deficit_days_per_year = deficit_days_per_year_r,
+    interannual_sd = interannual_sd_r,
+    dates = dates_w,
+    n_days = length(dates_w),
+    n_years = length(years_w)
+  )
+}
+
+make_crop_fraction <- function(spam_raster, template_raster) {
+  spam_aligned <- project(spam_raster, template_raster, method = "bilinear")
+  cell_area_m2 <- tryCatch(
+    cellSize(template_raster, unit = "m"),
+    error = function(e) cellSize(template_raster)
+  )
+  cell_area_ha <- cell_area_m2 / 10000
+  clamp(spam_aligned / cell_area_ha, 0, 1)
+}
+
+plot_and_save_raster <- function(r, title_txt, filename, admin_borders, admin_lvl0_borders) {
+  m <- tm_shape(r) +
+    tm_raster(title = title_txt) +
+    tm_shape(admin_borders) +
+    tm_borders(col = "white", lwd = 0.5) +
+    tm_shape(admin_lvl0_borders) +
+    tm_borders(col = "black", lwd = 1.2) +
+    tm_layout(title = title_txt, frame = FALSE)
+  tmap_save(m, filename = filename, width = 10, height = 7)
+  invisible(m)
+}
+
+build_region_day_table <- function(psi_stack, dates_stack, admin_sf) {
+  admin_ts <- sf::st_transform(admin_sf, terra::crs(psi_stack))
+  admin_labels <- sf::st_drop_geometry(admin_ts) %>%
+    mutate(region_id = as.character(NUTS_ID))
+
+  label_candidates <- c("NAME_LATN", "NUTS_NAME", "NAME_ENGL")
+  label_col <- label_candidates[label_candidates %in% names(admin_labels)]
+  admin_labels$region_label <- if (length(label_col) > 0) as.character(admin_labels[[label_col[1]]]) else admin_labels$region_id
+
+  daily_wide <- exactextractr::exact_extract(psi_stack, admin_ts, "mean") %>% tibble::as_tibble()
+  if (nrow(daily_wide) != nrow(admin_labels)) {
+    stop("Row mismatch while extracting daily regional PSI.")
+  }
+  daily_wide$region_id <- admin_labels$region_id
+
+  layer_lookup <- tibble(
+    layer = paste0("mean.", names(psi_stack)),
+    layer_index = seq_len(terra::nlyr(psi_stack)),
+    date = as.Date(dates_stack)
+  )
+
+  daily_wide %>%
+    tidyr::pivot_longer(-region_id, names_to = "layer", values_to = "psi_daily_mean") %>%
+    left_join(layer_lookup, by = "layer") %>%
+    left_join(admin_labels %>% select(region_id, region_label), by = "region_id")
+}
+```
+
+## Step 5 — Compute daily PSI once (full period)
+
+Continuous PSI (0-1), then reused for baseline and crop-specific windows.
+
+```{r psi-daily-full}
 compute_daily_psi <- function(tg_stack, rr_stack,
                               t_zero_low = 8, t_opt_low = 12,
                               t_opt_high = 25, t_zero_high = 30,
@@ -204,206 +279,70 @@ compute_daily_psi <- function(tg_stack, rr_stack,
 
   rain_score <- ifel(
     is.na(rr_stack), NA,
-    ifel(
-      rr_stack <= rr_opt, 1,
-      ifel(
-        rr_stack >= rr_zero, 0,
-        (rr_zero - rr_stack) / (rr_zero - rr_opt)
-      )
-    )
+    ifel(rr_stack <= rr_opt, 1, ifel(rr_stack >= rr_zero, 0, (rr_zero - rr_stack) / (rr_zero - rr_opt)))
   )
-
   clamp(temp_score * rain_score, lower = 0, upper = 1)
 }
 
-psi_daily <- compute_daily_psi(tg_am, rr_am)
-time(psi_daily) <- tg_dates[sel_am]
+psi_daily_full <- compute_daily_psi(tg_clip, rr_clip)
+time(psi_daily_full) <- dates_full
+
+dir.create(here("data_proc", "rasters"), showWarnings = FALSE, recursive = TRUE)
+writeRaster(psi_daily_full, here("data_proc/rasters/psi_daily_full.tif"), overwrite = TRUE)
 ```
 
-### 5.2 Save daily PSI
+## Step 6 — Baseline window (Apr-May) + crop-specific windows
 
-```{r save-psi-daily}
-writeRaster(psi_daily, here("data_proc/rasters/psi_daily.tif"), overwrite=TRUE)
-```
+Equivalent suitable days are continuous sums of daily PSI, not binary day counts.
 
-**Outputs:** mean, equivalent days, variability.
-
-## Step 6 — Temporal summaries ("spatio-temporal" core)
-
-
-### 6.1 Mean suitability (mean daily PSI)
-
-```{r psi-mean}
-psi_mean<- app(psi_daily, mean, na.rm=TRUE)  # 0–1
-```
-
-### 6.2 Equivalent suitable days
-
-```{r psi-days}
-sum_or_na <- function(x) {
-  if (all(is.na(x))) return(NA_real_)
-  sum(x, na.rm = TRUE)
-}
-
-psi_days<- app(psi_daily, sum_or_na)  # sum of daily PSI in the window
-```
-
-### 6.3 Equivalent deficit days
-
-```{r psi-deficit-days}
-psi_deficit_days <- app(1 - psi_daily, sum_or_na)
-```
-
-### 6.4 Mean equivalent days per Apr-May season
-
-```{r psi-days-per-year}
-n_years_am <- length(unique(format(tg_dates[sel_am], "%Y")))
-psi_days_per_year <- psi_days / n_years_am
-psi_deficit_days_per_year <- psi_deficit_days / n_years_am
-```
-
-### 6.5 Interannual variability (SD across yearly Apr-May means)
-
-```{r psi-sd}
-years_am <- unique(format(tg_dates[sel_am], "%Y"))
-mean_am_list <- list()
-for (y in years_am) {
-  idx_y <- which(format(tg_dates[sel_am], "%Y") == y)
-  mean_am_list[[y]] <- app(psi_daily[[idx_y]], mean, na.rm = TRUE)
-}
-psi_interannual_sd <- app(terra::rast(mean_am_list), sd, na.rm = TRUE)
-rm(mean_am_list)
-gc()
-```
-
-Save them:
-
-```{r save-psi-summaries}
-writeRaster(psi_mean, here("data_proc/rasters/psi_mean_am.tif"), overwrite=TRUE)
-writeRaster(psi_days, here("data_proc/rasters/psi_days_am.tif"), overwrite=TRUE)
-writeRaster(psi_deficit_days, here("data_proc/rasters/psi_deficit_days_am.tif"), overwrite=TRUE)
-writeRaster(psi_days_per_year, here("data_proc/rasters/psi_days_per_year_am.tif"), overwrite=TRUE)
-writeRaster(psi_deficit_days_per_year, here("data_proc/rasters/psi_deficit_days_per_year_am.tif"), overwrite=TRUE)
-writeRaster(psi_interannual_sd, here("data_proc/rasters/psi_interannual_sd_am.tif"), overwrite=TRUE)
-```
-
-```{r psi-window-context}
-# Sensitivity window (Mar-Jun)
-tg_mj <- tg_clip[[sel_mj]]
-rr_mj <- rr_clip[[sel_mj]]
-psi_daily_mj <- compute_daily_psi(tg_mj, rr_mj)
-time(psi_daily_mj) <- tg_dates[sel_mj]
-psi_mean_mj <- app(psi_daily_mj, mean, na.rm = TRUE)
-psi_days_mj <- app(psi_daily_mj, sum_or_na)
-psi_deficit_days_mj <- app(1 - psi_daily_mj, sum_or_na)
-n_years_mj <- length(unique(format(tg_dates[sel_mj], "%Y")))
-psi_days_mj_per_year <- psi_days_mj / n_years_mj
-psi_deficit_days_mj_per_year <- psi_deficit_days_mj / n_years_mj
-
-# Annual context window (full year) — computed year-by-year to avoid std::bad_alloc
-years_yr <- unique(format(tg_dates[sel_yr], "%Y"))
-mean_yr_list <- list()
-days_yr_list <- list()
-deficit_yr_list <- list()
-for (y in years_yr) {
-  idx_y <- which(format(tg_dates[sel_yr], "%Y") == y)
-  tg_y <- tg_clip[[sel_yr[idx_y]]]
-  rr_y <- rr_clip[[sel_yr[idx_y]]]
-  psi_y <- compute_daily_psi(tg_y, rr_y)
-  mean_yr_list[[y]] <- app(psi_y, mean, na.rm = TRUE)
-  days_yr_list[[y]] <- app(psi_y, sum_or_na)
-  deficit_yr_list[[y]] <- app(1 - psi_y, sum_or_na)
-  rm(tg_y, rr_y, psi_y)
-  gc()
-}
-psi_mean_yr <- mean(terra::rast(mean_yr_list))
-psi_days_yr <- sum(terra::rast(days_yr_list))
-psi_deficit_days_yr <- sum(terra::rast(deficit_yr_list))
-n_years_yr <- length(years_yr)
-psi_days_yr_per_year <- psi_days_yr / n_years_yr
-psi_deficit_days_yr_per_year <- psi_deficit_days_yr / n_years_yr
-rm(mean_yr_list, days_yr_list, deficit_yr_list)
-gc()
-
-writeRaster(psi_mean_mj, here("data_proc/rasters/psi_mean_marjun.tif"), overwrite = TRUE)
-writeRaster(psi_days_mj, here("data_proc/rasters/psi_days_marjun.tif"), overwrite = TRUE)
-writeRaster(psi_deficit_days_mj, here("data_proc/rasters/psi_deficit_days_marjun.tif"), overwrite = TRUE)
-writeRaster(psi_days_mj_per_year, here("data_proc/rasters/psi_days_per_year_marjun.tif"), overwrite = TRUE)
-writeRaster(psi_deficit_days_mj_per_year, here("data_proc/rasters/psi_deficit_days_per_year_marjun.tif"), overwrite = TRUE)
-writeRaster(psi_mean_yr, here("data_proc/rasters/psi_mean_annual.tif"), overwrite = TRUE)
-writeRaster(psi_days_yr, here("data_proc/rasters/psi_days_annual.tif"), overwrite = TRUE)
-writeRaster(psi_deficit_days_yr, here("data_proc/rasters/psi_deficit_days_annual.tif"), overwrite = TRUE)
-writeRaster(psi_days_yr_per_year, here("data_proc/rasters/psi_days_per_year_annual.tif"), overwrite = TRUE)
-writeRaster(psi_deficit_days_yr_per_year, here("data_proc/rasters/psi_deficit_days_per_year_annual.tif"), overwrite = TRUE)
-
-window_summary <- tibble::tibble(
-  window = c("Apr-May (main)", "Mar-Jun (sensitivity)", "Annual (context)"),
-  mean_psi = c(
-    as.numeric(global(psi_mean, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_mean_mj, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_mean_yr, "mean", na.rm = TRUE)[1, 1])
-  ),
-  equiv_suitable_days = c(
-    as.numeric(global(psi_days, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_days_mj, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_days_yr, "mean", na.rm = TRUE)[1, 1])
-  ),
-  equiv_deficit_days = c(
-    as.numeric(global(psi_deficit_days, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_deficit_days_mj, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_deficit_days_yr, "mean", na.rm = TRUE)[1, 1])
-  ),
-  equiv_suitable_days_per_year = c(
-    as.numeric(global(psi_days_per_year, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_days_mj_per_year, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_days_yr_per_year, "mean", na.rm = TRUE)[1, 1])
-  ),
-  equiv_deficit_days_per_year = c(
-    as.numeric(global(psi_deficit_days_per_year, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_deficit_days_mj_per_year, "mean", na.rm = TRUE)[1, 1]),
-    as.numeric(global(psi_deficit_days_yr_per_year, "mean", na.rm = TRUE)[1, 1])
-  ),
-  n_days = c(length(sel_am), length(sel_mj), length(sel_yr))
+```{r window-definitions}
+crop_windows <- tibble(
+  crop = c("rape", "temf", "sunf"),
+  start_mmdd = c("04-01", "04-05", "07-10"),
+  end_mmdd   = c("05-31", "05-10", "08-10")
 )
 
-dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
-write.csv(window_summary, here("outputs/tables/window_summary.csv"), row.names = FALSE)
-window_summary
+baseline_window <- list(start_mmdd = "04-01", end_mmdd = "05-31")
 ```
 
-```{r check-rasters}
-library(terra)
+```{r summarize-windows}
+# Baseline (kept for comparability)
+baseline_summary <- summarize_window(
+  psi_daily_full = psi_daily_full,
+  dates_full = dates_full,
+  start_mmdd = baseline_window$start_mmdd,
+  end_mmdd = baseline_window$end_mmdd
+)
+psi_mean <- baseline_summary$mean
+psi_days_per_year <- baseline_summary$equiv_days_per_year
+psi_interannual_sd <- baseline_summary$interannual_sd
 
-psi_mean_am <- rast(here("data_proc/rasters/psi_mean_am.tif"))
-psi_days_am <- rast(here("data_proc/rasters/psi_days_am.tif"))
-psi_deficit_days_am <- rast(here("data_proc/rasters/psi_deficit_days_am.tif"))
-psi_days_per_year_am <- rast(here("data_proc/rasters/psi_days_per_year_am.tif"))
-psi_interannual_sd_am <- rast(here("data_proc/rasters/psi_interannual_sd_am.tif"))
-tg_debenl   <- rast(here("data_proc/rasters/tg_debenl.tif"))
-rr_debenl   <- rast(here("data_proc/rasters/rr_debenl.tif"))
-psi_daily   <- rast(here("data_proc/rasters/psi_daily.tif"))   # if you saved it too
+writeRaster(baseline_summary$mean, here("data_proc/rasters/psi_mean_am.tif"), overwrite = TRUE)
+writeRaster(baseline_summary$equiv_days, here("data_proc/rasters/psi_equiv_days_am.tif"), overwrite = TRUE)
+writeRaster(baseline_summary$equiv_days_per_year, here("data_proc/rasters/psi_equiv_days_per_year_am.tif"), overwrite = TRUE)
+writeRaster(baseline_summary$deficit_days, here("data_proc/rasters/psi_deficit_days_am.tif"), overwrite = TRUE)
+writeRaster(baseline_summary$deficit_days_per_year, here("data_proc/rasters/psi_deficit_days_per_year_am.tif"), overwrite = TRUE)
+writeRaster(baseline_summary$interannual_sd, here("data_proc/rasters/psi_interannual_sd_am.tif"), overwrite = TRUE)
+
+crop_psi <- list()
+for (i in seq_len(nrow(crop_windows))) {
+  cr <- crop_windows$crop[i]
+  st_mmdd <- crop_windows$start_mmdd[i]
+  en_mmdd <- crop_windows$end_mmdd[i]
+  crop_psi[[cr]] <- summarize_window(psi_daily_full, dates_full, st_mmdd, en_mmdd)
+
+  writeRaster(crop_psi[[cr]]$mean, here("data_proc/rasters", sprintf("psi_mean_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_psi[[cr]]$equiv_days, here("data_proc/rasters", sprintf("psi_equiv_days_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_psi[[cr]]$equiv_days_per_year, here("data_proc/rasters", sprintf("psi_equiv_days_per_year_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_psi[[cr]]$deficit_days, here("data_proc/rasters", sprintf("psi_deficit_days_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_psi[[cr]]$deficit_days_per_year, here("data_proc/rasters", sprintf("psi_deficit_days_per_year_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_psi[[cr]]$interannual_sd, here("data_proc/rasters", sprintf("psi_interannual_sd_%s.tif", cr)), overwrite = TRUE)
+}
 ```
 
-```{r check}
-# Are rasters empty?
-#global(psi_mean_am, "mean", na.rm=TRUE)
-#global(psi_days_am, "max", na.rm=TRUE)
+## Step 7 — SPAM crops and crop fraction/intensity
 
-# Value ranges
-#global(tg_debenl, range, na.rm=TRUE)
-#global(rr_debenl, range, na.rm=TRUE)
-
-# PSI logic check
-global(psi_daily, "range", na.rm = TRUE)
-```
-
-## Step 7 — Bring SPAM 2020 crop data into the same grid
-
-This is where SPAM shines: it's already ~10 km, but it may still differ from E-OBS grid.
-
-### 7.1 Load SPAM crop raster (example: harvested area for rapeseed)
-
-```{r spam-load}
+```{r spam-load-and-fraction}
 read_spam_crop <- function(crop_code) {
   candidates <- c(
     sprintf("spam2020_V2r0_global_H_%s_TA.tif", crop_code),
@@ -413,9 +352,6 @@ read_spam_crop <- function(crop_code) {
   if (length(found) == 0) {
     stop("Missing SPAM raster for crop code: ", crop_code, ". Expected one of: ", paste(candidates, collapse = ", "))
   }
-  if (found[1] != candidates[1]) {
-    warning("Using fallback file for ", crop_code, ": ", found[1])
-  }
   rast(here("data_raw/spam", found[1]))
 }
 
@@ -424,618 +360,294 @@ spam_crops_ha <- list(
   temf = read_spam_crop("TEMF"),
   sunf = read_spam_crop("SUNF")
 )
+
+template_r <- baseline_summary$mean
+crop_frac <- list()
+for (cr in names(spam_crops_ha)) {
+  crop_frac[[cr]] <- make_crop_fraction(spam_crops_ha[[cr]], template_r)
+  writeRaster(crop_frac[[cr]], here("data_proc/rasters", sprintf("crop_frac_%s.tif", cr)), overwrite = TRUE)
+}
 ```
 
-### 7.2 Normalize CRS and resample SPAM to E-OBS template
+## Step 8 — Crop-weighted suitability and deficit exposure
 
-Use `psi_mean` as the template because it's exactly your analysis grid.
+`crop_suit_{crop} = psi_mean_{crop} * crop_frac_{crop}` is fraction-based.  
+`crop_bad_{crop} = psi_deficit_days_per_year_{crop} * crop_frac_{crop}` is day-based.  
+These are complementary indicators and are not directly comparable by magnitude.
 
-- Do not overwrite CRS labels with `crs(x) <- ...`; that only relabels metadata.
-- Use `project()` to reproject and align each crop raster to the PSI template.
-- If SPAM is continuous (ha, production): `"bilinear"` is acceptable.
+```{r crop-weighted}
+crop_suit <- list()
+crop_bad <- list()
+for (cr in names(crop_frac)) {
+  crop_suit[[cr]] <- crop_psi[[cr]]$mean * crop_frac[[cr]]
+  crop_bad[[cr]] <- crop_psi[[cr]]$deficit_days_per_year * crop_frac[[cr]]
 
-```{r spam-project}
-spam_crops_eobs <- lapply(
-  spam_crops_ha,
-  function(r) project(r, psi_mean, method = "bilinear")
-)
+  writeRaster(crop_suit[[cr]], here("data_proc/rasters", sprintf("crop_suit_%s.tif", cr)), overwrite = TRUE)
+  writeRaster(crop_bad[[cr]], here("data_proc/rasters", sprintf("crop_bad_%s.tif", cr)), overwrite = TRUE)
+}
 ```
 
-Save:
-
-```{r spam-save}
-writeRaster(spam_crops_eobs$rape, here("data_proc/rasters/spam_rape_ha_eobs.tif"), overwrite=TRUE)
-writeRaster(spam_crops_eobs$temf, here("data_proc/rasters/spam_temf_ha_eobs.tif"), overwrite=TRUE)
-writeRaster(spam_crops_eobs$sunf, here("data_proc/rasters/spam_sunf_ha_eobs.tif"), overwrite=TRUE)
-```
-
-## Step 8 — Convert SPAM “harvested area” to a crop fraction/intensity (optional but strong)
-
-### 8.1 Compute cell area (ha) for the E-OBS grid
-
-```{r cell-area}
-cell_area_m2 <- tryCatch(
-  cellSize(psi_mean, unit = "m"),
-  error = function(e) cellSize(psi_mean)
-)
-cell_area_ha <- cell_area_m2 / 10000
-global(cell_area_m2, "range", na.rm = TRUE)
-```
-
-### 8.2 Crop fraction (0–1-ish, can exceed 1 in rare edge cases; clamp)
-
-```{r rape-fraction}
-crop_frac <- lapply(spam_crops_eobs, function(r) clamp(r / cell_area_ha, 0, 1))
-
-rape_frac <- crop_frac$rape
-temf_frac <- crop_frac$temf
-sunf_frac <- crop_frac$sunf
-
-writeRaster(rape_frac, here("data_proc/rasters/rape_fraction.tif"), overwrite=TRUE)
-writeRaster(temf_frac, here("data_proc/rasters/temf_fraction.tif"), overwrite=TRUE)
-writeRaster(sunf_frac, here("data_proc/rasters/sunf_fraction.tif"), overwrite=TRUE)
-```
-
-## Step 9 — Compute crop-weighted suitability and crop-weighted risk
-
-You want metrics that combine climate + crop exposure.
-Note on units: `rape_suit = psi_mean * rape_frac` is fraction-based (0-1 scaled by crop fraction), while `rape_bad = psi_deficit_days_per_year * rape_frac` is day-based (equivalent unsuitable days/year scaled by crop fraction), so they are complementary indicators and should not be compared directly by magnitude.
-
-### 9.1 Crop-weighted suitability
-
-```{r rape-suitability-weighted}
-crop_suit <- lapply(crop_frac, function(fr) psi_mean * fr)
-
-rape_suit <- crop_suit$rape
-temf_suit <- crop_suit$temf
-sunf_suit <- crop_suit$sunf
-
-writeRaster(rape_suit, here("data_proc/rasters/rape_suitability_weighted.tif"), overwrite=TRUE)
-writeRaster(temf_suit, here("data_proc/rasters/temf_suitability_weighted.tif"), overwrite=TRUE)
-writeRaster(sunf_suit, here("data_proc/rasters/sunf_suitability_weighted.tif"), overwrite=TRUE)
-```
-
-### 9.2 Crop-weighted deficit exposure (equivalent unsuitable days)
-
-Define daily deficit as (1 - PSI):
-
-```{r rape-bad-exposure}
-bad_days <- psi_deficit_days_per_year
-
-crop_bad <- lapply(crop_frac, function(fr) bad_days * fr)
-
-rape_bad_exposure <- crop_bad$rape
-temf_bad_exposure <- crop_bad$temf
-sunf_bad_exposure <- crop_bad$sunf
-
-writeRaster(rape_bad_exposure, here("data_proc/rasters/rape_bad_exposure.tif"), overwrite=TRUE)
-writeRaster(temf_bad_exposure, here("data_proc/rasters/temf_bad_exposure.tif"), overwrite=TRUE)
-writeRaster(sunf_bad_exposure, here("data_proc/rasters/sunf_bad_exposure.tif"), overwrite=TRUE)
-```
-
-## Step 10 — Aggregate rasters to Admin regions
-
-
-### 10.1 Prep admin polygons in same CRS as rasters
-
-```{r admin-4326}
-admin_4326<- st_transform(admin_debenl, crs(psi_mean))
-```
-
-### 10.2 Zonal stats with exactextractr
+## Step 9 — Aggregate to admin regions (NUTS2, stable region_id)
 
 ```{r admin-stats}
-admin_stats<- admin_4326%>%
+admin_4326 <- st_transform(admin_debenl, crs(template_r))
+admin_stats <- admin_4326 %>%
   mutate(
-    psi_mean = exact_extract(psi_mean,           ., "mean"),
-    psi_days = exact_extract(psi_days,           ., "mean"),
-    psi_deficit = exact_extract(psi_deficit_days, ., "mean"),
-    psi_days_per_year = exact_extract(psi_days_per_year, ., "mean"),
-    psi_deficit_per_year = exact_extract(psi_deficit_days_per_year, ., "mean"),
-    psi_interannual_sd = exact_extract(psi_interannual_sd, ., "mean"),
-    rape_frac= exact_extract(rape_frac,          ., "mean"),
-    rape_suit= exact_extract(rape_suit,          ., "mean"),
-    rape_bad = exact_extract(rape_bad_exposure,  ., "mean"),
-    temf_frac= exact_extract(temf_frac,          ., "mean"),
-    temf_suit= exact_extract(temf_suit,          ., "mean"),
-    temf_bad = exact_extract(temf_bad_exposure,  ., "mean"),
-    sunf_frac= exact_extract(sunf_frac,          ., "mean"),
-    sunf_suit= exact_extract(sunf_suit,          ., "mean"),
-    sunf_bad = exact_extract(sunf_bad_exposure,  ., "mean")
-  ) %>%
-  tidyr::replace_na(list(
-    rape_frac = 0, rape_suit = 0, rape_bad = 0,
-    temf_frac = 0, temf_suit = 0, temf_bad = 0,
-    sunf_frac = 0, sunf_suit = 0, sunf_bad = 0
-  )) %>%
-  mutate(
-    region_id = as.character(NUTS_ID)
+    region_id = as.character(NUTS_ID),
+    psi_mean_am = exact_extract(baseline_summary$mean, ., "mean"),
+    psi_equiv_days_per_year_am = exact_extract(baseline_summary$equiv_days_per_year, ., "mean"),
+    psi_interannual_sd_am = exact_extract(baseline_summary$interannual_sd, ., "mean")
   )
-```
 
-Save table:
+for (cr in crop_windows$crop) {
+  admin_stats[[paste0("psi_mean_", cr)]] <- exact_extract(crop_psi[[cr]]$mean, admin_stats, "mean")
+  admin_stats[[paste0("psi_equiv_days_", cr)]] <- exact_extract(crop_psi[[cr]]$equiv_days, admin_stats, "mean")
+  admin_stats[[paste0("psi_equiv_days_per_year_", cr)]] <- exact_extract(crop_psi[[cr]]$equiv_days_per_year, admin_stats, "mean")
+  admin_stats[[paste0("psi_deficit_days_", cr)]] <- exact_extract(crop_psi[[cr]]$deficit_days, admin_stats, "mean")
+  admin_stats[[paste0("psi_deficit_days_per_year_", cr)]] <- exact_extract(crop_psi[[cr]]$deficit_days_per_year, admin_stats, "mean")
+  admin_stats[[paste0("psi_interannual_sd_", cr)]] <- exact_extract(crop_psi[[cr]]$interannual_sd, admin_stats, "mean")
+  admin_stats[[paste0("crop_frac_", cr)]] <- exact_extract(crop_frac[[cr]], admin_stats, "mean")
+  admin_stats[[paste0("crop_suit_", cr)]] <- exact_extract(crop_suit[[cr]], admin_stats, "mean")
+  admin_stats[[paste0("crop_bad_", cr)]] <- exact_extract(crop_bad[[cr]], admin_stats, "mean")
+}
+
+crop_cols <- grep("^(crop_frac_|crop_suit_|crop_bad_)", names(admin_stats), value = TRUE)
+for (cc in crop_cols) {
+  admin_stats[[cc]][is.na(admin_stats[[cc]])] <- 0
+}
+```
 
 ```{r admin-stats-save}
 dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
-write.csv(
-  st_drop_geometry(admin_stats),
-  here("data_proc/tables/admin_pollination_stats.csv"),
-  row.names = FALSE
-)
+write.csv(st_drop_geometry(admin_stats), here("data_proc/tables/admin_pollination_stats.csv"), row.names = FALSE)
 ```
 
-**Outputs:**
+## Step 10 — Global Moran’s I + Local Moran (LISA) per crop metric
 
-- A clean regional dataset to map + analyze + rank.
-
-## Step 11 — Spatial weights + Global Moran’s I + LISA (region level)
-
-### 11.1 Prepare neighbors (queen contiguity)
-
-```{r moran-neighbors}
-admin_stats_3035<- st_transform(admin_stats, 3035)
-
-nb<- st_contiguity(admin_stats_3035)      # neighbors (queen contiguity)
-lw<- st_weights(nb, style="W")           # row-standardized weights
-```
-
-### 11.2 Global Moran’s I (example on rape_suit)
-```{r}
-summary(admin_stats_3035$rape_suit)
-table(is.finite(admin_stats_3035$rape_suit))
-which(!is.finite(admin_stats_3035$rape_suit))[1:20]  # first few indices
-```
-```{r global-moran}
-library(dplyr)
+```{r spatial-stats}
 library(sfdep)
 
-# 1) Keep only regions with valid values
-admin_ok <- admin_stats_3035 %>%
-  filter(!is.na(rape_suit), is.finite(rape_suit))
+admin_stats_3035 <- st_transform(admin_stats, 3035)
+compare_crops <- crop_windows$crop
+compare_metrics <- c("crop_bad", "crop_suit")
 
-# report how many were removed
-cat("Rows total:", nrow(admin_stats_3035),
-    " | used:", nrow(admin_ok),
-    " | removed:", nrow(admin_stats_3035) - nrow(admin_ok), "\n")
-
-# 2) Build neighbors + weights (queen contiguity)
-nb_ok <- st_contiguity(admin_ok)
-zero_nbr <- lengths(nb_ok) == 0
-if (any(zero_nbr)) {
-  cat("Dropping isolated regions (0 neighbors):", sum(zero_nbr), "\n")
-  admin_ok <- admin_ok[!zero_nbr, ]
-  nb_ok <- st_contiguity(admin_ok)
-}
-lw_ok <- st_weights(nb_ok, style = "W")
-
-# 3) Global Moran's I (sfdep versions without allow_zero argument)
-global_m <- global_moran(admin_ok$rape_suit, nb_ok, lw_ok)
-global_m
-
-# (optional) permutation-based p-value (stronger for reporting)
-global_mc <- global_moran_perm(admin_ok$rape_suit, nb_ok, lw_ok, nsim = 999)
-global_mc
-
-```
-
-### 11.3 Cross-crop comparison (exposure + clustering)
-
-```{r crop-compare}
-library(dplyr)
-library(sfdep)
-
-compare_crops <- c("rape", "temf", "sunf")
-
-exposure_tbl <- tibble(
-  crop = compare_crops,
-  mean_bad = sapply(compare_crops, function(cr) mean(admin_stats_3035[[paste0(cr, "_bad")]], na.rm = TRUE)),
-  p90_bad = sapply(compare_crops, function(cr) as.numeric(quantile(admin_stats_3035[[paste0(cr, "_bad")]], probs = 0.90, na.rm = TRUE))),
-  mean_suit = sapply(compare_crops, function(cr) mean(admin_stats_3035[[paste0(cr, "_suit")]], na.rm = TRUE))
-) %>%
-  arrange(desc(mean_bad))
-
-run_crop_moran <- function(sf_obj, col_name, nsim = 999) {
+run_global_moran <- function(sf_obj, value_col, nsim = 999) {
   sf_ok <- sf_obj %>%
-    mutate(value = .data[[col_name]]) %>%
+    mutate(value = .data[[value_col]]) %>%
     filter(is.finite(value))
-
-  if (nrow(sf_ok) < 3) {
-    return(tibble(moran_I = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
-  }
+  if (nrow(sf_ok) < 3) return(tibble(moran_i = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
 
   nb_ok <- st_contiguity(sf_ok)
-  zero_nbr <- lengths(nb_ok) == 0
-  if (any(zero_nbr)) {
-    sf_ok <- sf_ok[!zero_nbr, ]
-    if (nrow(sf_ok) < 3) {
-      return(tibble(moran_I = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
-    }
-    nb_ok <- st_contiguity(sf_ok)
+  keep <- lengths(nb_ok) > 0
+  sf_ok <- sf_ok[keep, ]
+  if (nrow(sf_ok) < 3) return(tibble(moran_i = NA_real_, p_value = NA_real_, n_regions = nrow(sf_ok)))
+  nb_ok <- st_contiguity(sf_ok)
+  lw_ok <- st_weights(nb_ok, style = "W")
+
+  gm <- global_moran(sf_ok$value, nb_ok, lw_ok)
+  gp <- global_moran_perm(sf_ok$value, nb_ok, lw_ok, nsim = nsim)
+  tibble(moran_i = as.numeric(gm$I), p_value = as.numeric(gp$p.value), n_regions = nrow(sf_ok))
+}
+
+clustering_tbl <- bind_rows(lapply(compare_crops, function(cr) {
+  bind_rows(lapply(compare_metrics, function(mt) {
+    vcol <- paste0(mt, "_", cr)
+    out <- run_global_moran(admin_stats_3035, vcol)
+    out$crop <- cr
+    out$metric <- mt
+    out
+  }))
+})) %>%
+  select(crop, metric, moran_i, p_value, n_regions)
+
+for (cr in compare_crops) {
+  val_col <- paste0("crop_bad_", cr)
+  sf_ok <- admin_stats_3035 %>%
+    mutate(value = .data[[val_col]]) %>%
+    filter(is.finite(value))
+  nb_ok <- st_contiguity(sf_ok)
+  keep <- lengths(nb_ok) > 0
+  sf_ok <- sf_ok[keep, ]
+  nb_ok <- st_contiguity(sf_ok)
+  lw_ok <- st_weights(nb_ok, style = "W")
+  lisa <- local_moran(sf_ok$value, nb_ok, lw_ok)
+  lisa_tbl <- as_tibble(lisa)
+
+  sf_ok <- sf_ok %>%
+    bind_cols(lisa_tbl) %>%
+    mutate(
+      tmp_i = ii,
+      tmp_p = p_ii
+    )
+
+  if ("mean" %in% names(sf_ok)) {
+    sf_ok <- sf_ok %>% mutate(tmp_cl = as.character(mean))
+  } else if ("cluster" %in% names(sf_ok)) {
+    sf_ok <- sf_ok %>% mutate(tmp_cl = as.character(cluster))
+  } else {
+    sf_ok <- sf_ok %>% mutate(tmp_cl = NA_character_)
   }
 
-  lw_ok <- st_weights(nb_ok, style = "W")
-  gm <- global_moran(sf_ok$value, nb_ok, lw_ok)
-  gm_perm <- global_moran_perm(sf_ok$value, nb_ok, lw_ok, nsim = nsim)
+  sf_ok <- sf_ok %>%
+    mutate(
+      tmp_sig = case_when(
+        is.na(tmp_p) ~ NA_character_,
+        tmp_p <= 0.05 ~ tmp_cl,
+        TRUE ~ "Not significant"
+      )
+    ) %>%
+    st_drop_geometry() %>%
+    select(region_id, tmp_i, tmp_p, tmp_cl, tmp_sig)
 
-  tibble(
-    moran_I = as.numeric(gm$I),
-    p_value = as.numeric(gm_perm$p.value),
-    n_regions = nrow(sf_ok)
-  )
-}
-
-cluster_tbl <- bind_rows(lapply(compare_crops, function(cr) {
-  out <- run_crop_moran(admin_stats_3035, paste0(cr, "_suit"))
-  out$crop <- cr
-  out
-})) %>%
-  select(crop, moran_I, p_value, n_regions) %>%
-  arrange(desc(moran_I))
-
-cat("Highest mean exposure (mean *_bad):", exposure_tbl$crop[1], "\n")
-cat("Strongest clustering (max Moran's I on *_suit):", cluster_tbl$crop[1], "\n")
-
-dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
-write.csv(exposure_tbl, here("outputs/tables/crop_exposure_comparison.csv"), row.names = FALSE)
-write.csv(cluster_tbl, here("outputs/tables/crop_clustering_comparison.csv"), row.names = FALSE)
-
-exposure_tbl
-cluster_tbl
-```
-
-### 11.4 Local Moran’s I (LISA)
-
-```{r local-moran}
-library(dplyr)
-library(sfdep)
-
-# 0) Create a stable ID (do this ONCE)
-admin_stats_3035 <- admin_stats_3035 %>%
-  mutate(
-    region_id = if ("region_id" %in% names(.)) as.character(region_id) else if ("NUTS_ID" %in% names(.)) as.character(NUTS_ID) else as.character(row_number())
-  )
-
-# 1) Keep only finite values
-admin_ok <- admin_stats_3035 %>%
-  filter(is.finite(rape_suit))
-
-# 2) Rebuild neighbors/weights
-nb_ok <- st_contiguity(admin_ok)
-zero_nbr_lisa <- lengths(nb_ok) == 0
-if (any(zero_nbr_lisa)) {
-  cat("Dropping isolated regions for LISA:", sum(zero_nbr_lisa), "\n")
-  admin_ok <- admin_ok[!zero_nbr_lisa, ]
-  nb_ok <- st_contiguity(admin_ok)
-}
-lw_ok <- st_weights(nb_ok, style = "W")
-
-# 3) LISA
-lisa_ok <- local_moran(admin_ok$rape_suit, nb_ok, lw_ok)
-
-# 4) Attach results (robust across sfdep output variants)
-admin_ok <- admin_ok %>%
-  bind_cols(as_tibble(lisa_ok)) %>%
-  mutate(
-    lisa_i  = ii,
-    lisa_p  = p_ii
-  )
-
-if ("mean" %in% names(admin_ok)) {
-  admin_ok <- admin_ok %>% mutate(lisa_cl = as.character(mean))
-} else if ("cluster" %in% names(admin_ok)) {
-  admin_ok <- admin_ok %>% mutate(lisa_cl = as.character(cluster))
-} else {
-  admin_ok <- admin_ok %>% mutate(lisa_cl = NA_character_)
-}
-
-
-```
-
-```{r lisa-join}
-# 5) Join back using region_id
-admin_stats_3035 <- admin_stats_3035 %>%
-  left_join(
-    admin_ok %>%
-      st_drop_geometry() %>%
-      select(region_id, lisa_i, lisa_p, lisa_cl),
-    by = "region_id"
-  )
-```
-
-Verify the join:
-
-```{r lisa-verify}
-# Should show NAs for regions dropped from admin_ok (non-finite rape_suit) and the rest filled
-table(is.na(admin_stats_3035$lisa_i))
-table(admin_stats_3035$lisa_cl, useNA = "ifany")
-summary(admin_stats_3035$lisa_p)
-```
-
-Create a "significant cluster" label (for mapping):
-
-```{r lisa-sig}
-admin_stats_3035 <- admin_stats_3035 %>%
-  mutate(
-    lisa_sig = case_when(
-      is.na(lisa_p) ~ NA_character_,
-      lisa_p <= 0.05 ~ as.character(lisa_cl),
-      TRUE ~ "Not significant"
+  admin_stats_3035 <- admin_stats_3035 %>%
+    left_join(sf_ok, by = "region_id") %>%
+    rename(
+      !!paste0("lisa_i_crop_bad_", cr) := tmp_i,
+      !!paste0("lisa_p_crop_bad_", cr) := tmp_p,
+      !!paste0("lisa_cl_crop_bad_", cr) := tmp_cl,
+      !!paste0("lisa_sig_crop_bad_", cr) := tmp_sig
     )
-  )
+}
 
-table(admin_stats_3035$lisa_sig, useNA = "ifany")
+dir.create(here("data_proc", "vectors"), showWarnings = FALSE, recursive = TRUE)
+st_write(admin_stats_3035, here("data_proc/vectors/admin_stats_lisa.gpkg"), delete_layer = TRUE)
+
+write.csv(clustering_tbl, here("data_proc/tables/crop_clustering_comparison.csv"), row.names = FALSE)
 ```
 
-
-Save:
-
-```{r lisa-save}
-st_write(
-  admin_stats_3035,
-  here("data_proc/vectors/admin_stats_lisa.gpkg"),
-  delete_dsn = TRUE
-)
-```
-
-## Step 12 - Create final deliverables (maps, plots, tables)
-
-### 12.1 Maps (minimum set)
+## Step 11 — Maps
 
 ```{r maps-deliverables}
 library(tmap)
-library(here)
 
 dir.create(here("outputs", "maps"), showWarnings = FALSE, recursive = TRUE)
 tmap_mode("plot")
 
-save_map <- function(map_obj, filename) {
-  tmap_save(map_obj, filename = filename, width = 10, height = 7)
+admin_borders <- st_transform(admin_debenl, 4326)
+admin_lvl0_borders <- admin_debenl %>%
+  group_by(CNTR_CODE) %>%
+  summarise(do_union = TRUE, .groups = "drop") %>%
+  st_make_valid() %>%
+  st_transform(4326)
+
+# Baseline maps
+plot_and_save_raster(baseline_summary$mean, "Mean PSI (Apr-May baseline)", here("outputs/maps/map_psi_mean.png"), admin_borders, admin_lvl0_borders)
+plot_and_save_raster(baseline_summary$equiv_days_per_year, "Equivalent suitable days/year (Apr-May baseline)", here("outputs/maps/map_psi_days.png"), admin_borders, admin_lvl0_borders)
+plot_and_save_raster(baseline_summary$interannual_sd, "Interannual PSI SD (Apr-May baseline)", here("outputs/maps/map_psi_interannual_sd.png"), admin_borders, admin_lvl0_borders)
+
+# Crop-specific maps
+for (cr in compare_crops) {
+  plot_and_save_raster(crop_psi[[cr]]$mean, sprintf("PSI mean (%s window)", cr), here("outputs/maps", sprintf("map_psi_mean_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_psi[[cr]]$equiv_days_per_year, sprintf("Equivalent suitable days/year (%s window)", cr), here("outputs/maps", sprintf("map_psi_equiv_days_per_year_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_frac[[cr]], sprintf("Crop fraction (%s)", cr), here("outputs/maps", sprintf("map_crop_frac_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_suit[[cr]], sprintf("Crop-weighted suitability (%s)", cr), here("outputs/maps", sprintf("map_crop_suit_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_bad[[cr]], sprintf("Crop-weighted deficit exposure (%s)", cr), here("outputs/maps", sprintf("map_crop_bad_%s.png", cr)), admin_borders, admin_lvl0_borders)
+
+  lisa_col <- paste0("lisa_sig_crop_bad_", cr)
+  if (lisa_col %in% names(admin_stats_3035)) {
+    map_lisa <- tm_shape(admin_stats_3035) +
+      tm_polygons(lisa_col, title = "LISA cluster", colorNA = "grey85") +
+      tm_layout(title = sprintf("LISA clusters (%s crop_bad)", cr), frame = FALSE)
+    tmap_save(map_lisa, filename = here("outputs/maps", sprintf("map_lisa_%s_bad.png", cr)), width = 10, height = 7)
+  }
 }
-
-admin_4326 <- st_transform(admin_debenl, 4326)
-admin_lvl0_4326 <- admin_debenl %>%
-  dplyr::group_by(CNTR_CODE) %>%
-  dplyr::summarise(do_union = TRUE, .groups = "drop") %>%
-  sf::st_make_valid() %>%
-  sf::st_transform(4326)
-
-map_psi_mean <- tm_shape(psi_mean) +
-  tm_raster(title = "PSI mean") +
-  tm_shape(admin_4326) +
-  tm_borders(col = "white", lwd = 0.5) +
-  tm_shape(admin_lvl0_4326) +
-  tm_borders(col = "black", lwd = 1.2) +
-  tm_layout(title = "Mean PSI (Apr-May)", frame = FALSE)
-
-map_psi_days <- tm_shape(psi_days_per_year) +
-  tm_raster(title = "Eq. suitable days/year") +
-  tm_shape(admin_4326) +
-  tm_borders(col = "white", lwd = 0.5) +
-  tm_shape(admin_lvl0_4326) +
-  tm_borders(col = "black", lwd = 1.2) +
-  tm_layout(title = "Mean equivalent suitable days per Apr-May season", frame = FALSE)
-
-map_psi_interannual_sd <- tm_shape(psi_interannual_sd) +
-  tm_raster(title = "Interannual PSI SD") +
-  tm_shape(admin_4326) +
-  tm_borders(col = "white", lwd = 0.5) +
-  tm_shape(admin_lvl0_4326) +
-  tm_borders(col = "black", lwd = 1.2) +
-  tm_layout(title = "PSI interannual variability (SD, Apr-May means)", frame = FALSE)
-
-map_rape_frac <- tm_shape(rape_frac) +
-  tm_raster(title = "Rape fraction") +
-  tm_shape(admin_4326) +
-  tm_borders(col = "white", lwd = 0.5) +
-  tm_shape(admin_lvl0_4326) +
-  tm_borders(col = "black", lwd = 1.2) +
-  tm_layout(title = "Rapeseed fraction/intensity", frame = FALSE)
-
-map_rape_suit <- tm_shape(rape_suit) +
-  tm_raster(title = "Weighted suitability") +
-  tm_shape(admin_4326) +
-  tm_borders(col = "white", lwd = 0.5) +
-  tm_shape(admin_lvl0_4326) +
-  tm_borders(col = "black", lwd = 1.2) +
-  tm_layout(title = "Crop-weighted suitability", frame = FALSE)
-
-save_map(map_psi_mean, here("outputs/maps/map_psi_mean.png"))
-save_map(map_psi_days, here("outputs/maps/map_psi_days.png"))
-save_map(map_psi_interannual_sd, here("outputs/maps/map_psi_interannual_sd.png"))
-save_map(map_rape_frac, here("outputs/maps/map_rape_frac.png"))
-save_map(map_rape_suit, here("outputs/maps/map_rape_suit.png"))
-
-if ("lisa_sig" %in% names(admin_stats_3035)) {
-  map_lisa <- tm_shape(admin_stats_3035) +
-    tm_polygons("lisa_sig", title = "LISA cluster", colorNA = "grey85") +
-    tm_layout(title = "LISA clusters (rape_suit)", frame = FALSE)
-  save_map(map_lisa, here("outputs/maps/map_lisa_clusters.png"))
-}
-
-map_psi_mean
 ```
 
-### 12.2 Time series plot per region (region x day)
+## Step 12 — Time-series plots for 2020 crop windows (top 12 by crop_bad)
 
 ```{r region-day-timeseries}
-library(dplyr)
-library(tidyr)
-library(exactextractr)
 library(ggplot2)
-library(here)
 
 dir.create(here("outputs", "plots"), showWarnings = FALSE, recursive = TRUE)
-dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
 
-psi_region_day_path <- here("data_proc", "tables", "psi_region_day.csv")
-if (!exists("psi_region_day", inherits = FALSE)) {
-  if (file.exists(psi_region_day_path)) {
-    psi_region_day <- read.csv(
-      psi_region_day_path,
-      stringsAsFactors = FALSE
+admin_stats_tbl <- st_drop_geometry(admin_stats_3035)
+
+for (i in seq_len(nrow(crop_windows))) {
+  cr <- crop_windows$crop[i]
+  st_mmdd <- crop_windows$start_mmdd[i]
+  en_mmdd <- crop_windows$end_mmdd[i]
+
+  sel_crop <- select_window_by_mmdd(dates_full, st_mmdd, en_mmdd)
+  dates_crop <- dates_full[sel_crop]
+  psi_crop_daily <- psi_daily_full[[which(sel_crop)]]
+  time(psi_crop_daily) <- dates_crop
+
+  psi_region_day <- build_region_day_table(psi_crop_daily, dates_crop, admin_debenl) %>%
+    mutate(
+      region_id = as.character(region_id),
+      region_label = as.character(region_label),
+      date = as.Date(date),
+      psi_daily_mean = as.numeric(psi_daily_mean)
     )
-  } else {
-    if (!exists("psi_daily", inherits = FALSE) || !exists("admin_debenl", inherits = FALSE)) {
-      stop("psi_region_day.csv not found, and cannot rebuild because psi_daily/admin_debenl are missing in memory.")
-    }
 
-    admin_ts <- sf::st_transform(admin_debenl, terra::crs(psi_daily))
-    admin_labels <- sf::st_drop_geometry(admin_ts) %>%
-      mutate(region_id = as.character(NUTS_ID))
-    label_candidates <- c("NAME_LATN", "NUTS_NAME", "NAME_ENGL")
-    label_col <- label_candidates[label_candidates %in% names(admin_labels)]
-    admin_labels$region_label <- if (length(label_col) > 0) as.character(admin_labels[[label_col[1]]]) else admin_labels$region_id
+  write.csv(psi_region_day, here("data_proc/tables", sprintf("psi_region_day_%s.csv", cr)), row.names = FALSE)
 
-    daily_wide <- exactextractr::exact_extract(psi_daily, admin_ts, "mean") %>% tibble::as_tibble()
-    if (nrow(daily_wide) != nrow(admin_labels)) {
-      stop("Row mismatch while rebuilding psi_region_day from psi_daily.")
-    }
-    daily_wide$region_id <- admin_labels$region_id
+  top_regions <- admin_stats_tbl %>%
+    filter(is.finite(.data[[paste0("crop_bad_", cr)]])) %>%
+    arrange(desc(.data[[paste0("crop_bad_", cr)]])) %>%
+    slice_head(n = 12) %>%
+    pull(region_id)
 
-    layer_lookup <- tibble::tibble(
-      layer = paste0("mean.", names(psi_daily)),
-      layer_index = seq_len(terra::nlyr(psi_daily))
+  plot_df <- psi_region_day %>%
+    filter(
+      region_id %in% top_regions,
+      date >= as.Date(paste0("2020-", st_mmdd)),
+      date <= as.Date(paste0("2020-", en_mmdd))
     )
-    psi_dates <- suppressWarnings(as.Date(terra::time(psi_daily)))
-    if (length(psi_dates) != terra::nlyr(psi_daily) || all(is.na(psi_dates))) {
-      if (exists("tg_dates", inherits = FALSE) && exists("sel_am", inherits = FALSE)) {
-        psi_dates <- tg_dates[sel_am]
-      } else {
-        psi_dates <- rep(as.Date(NA), terra::nlyr(psi_daily))
-      }
-    }
-    layer_lookup$date <- psi_dates
 
-    psi_region_day <- daily_wide %>%
-      tidyr::pivot_longer(-region_id, names_to = "layer", values_to = "psi_daily_mean") %>%
-      dplyr::left_join(layer_lookup, by = "layer") %>%
-      dplyr::left_join(admin_labels %>% dplyr::select(region_id, region_label), by = "region_id")
-
-    write.csv(psi_region_day, psi_region_day_path, row.names = FALSE)
+  if (nrow(plot_df) == 0) {
+    stop("No rows for ", cr, " after filtering 2020 crop window.")
   }
-}
-psi_region_day <- psi_region_day %>%
-  mutate(
-    region_id = as.character(region_id),
-    region_label = as.character(region_label),
-    date = as.Date(date),
-    psi_daily_mean = as.numeric(psi_daily_mean)
+
+  p_ts <- ggplot(plot_df, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
+    geom_line(alpha = 0.85) +
+    labs(
+      x = "Date",
+      y = "Daily regional mean PSI",
+      title = sprintf("Daily PSI by region (top 12 by %s bad) — %s to %s, 2020", cr, st_mmdd, en_mmdd)
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+
+  ggsave(
+    here("outputs/plots", sprintf("ts_psi_daily_top12_%s_bad_%s_%s_2020.png", cr, gsub("-", "", st_mmdd), gsub("-", "", en_mmdd))),
+    p_ts, width = 10, height = 6, dpi = 300
   )
-
-if (!exists("admin_stats_3035", inherits = FALSE)) {
-  stats_tbl <- read.csv(
-    here("data_proc", "tables", "admin_pollination_stats.csv"),
-    stringsAsFactors = FALSE
-  )
-} else {
-  stats_tbl <- if (inherits(admin_stats_3035, "sf")) {
-    sf::st_drop_geometry(admin_stats_3035)
-  } else {
-    admin_stats_3035
-  }
 }
-stats_tbl <- stats_tbl %>%
-  mutate(region_id = as.character(region_id))
-
-top_regions <- stats_tbl %>%
-  filter(is.finite(rape_bad)) %>%
-  arrange(desc(rape_bad)) %>%
-  slice_head(n = 12) %>%
-  pull(region_id)
-
-plot_df <- psi_region_day %>%
-  filter(
-    region_id %in% top_regions,
-    date >= as.Date("2020-03-01"),
-    date <= as.Date("2020-06-30")
-  )
-
-if (nrow(plot_df) == 0) {
-  stop("No rows after filtering top regions and Mar-Jun 2020 window. Check region_id alignment and date values in psi_region_day.")
-}
-
-p_ts <- ggplot(plot_df, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
-  geom_line(alpha = 0.85) +
-  labs(
-    x = "Date",
-    y = "Daily regional mean PSI",
-    title = "Daily PSI by region (top 12 by rape_bad) — Mar-Jun 2020"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-ggsave(here("outputs/plots/ts_psi_daily_top12_rape_bad_MarJun_2020.png"), p_ts, width = 10, height = 6, dpi = 300)
-p_ts
-
-# Second plot: full-year 2020 for top 10 regions by rape_bad
-top_regions_10 <- stats_tbl %>%
-  filter(is.finite(rape_bad)) %>%
-  arrange(desc(rape_bad)) %>%
-  slice_head(n = 10) %>%
-  pull(region_id)
-
-plot_df_2020 <- psi_region_day %>%
-  filter(
-    region_id %in% top_regions_10,
-    date >= as.Date("2020-01-01"),
-    date <= as.Date("2020-12-31")
-  )
-
-if (nrow(plot_df_2020) == 0) {
-  stop("No rows after filtering top 10 regions and Jan-Dec 2020 window. Check region_id alignment and date values in psi_region_day.")
-}
-
-p_ts_2020 <- ggplot(plot_df_2020, aes(x = date, y = psi_daily_mean, color = region_label, group = region_label)) +
-  geom_line(alpha = 0.85) +
-  labs(
-    x = "Date",
-    y = "Daily regional mean PSI",
-    title = "Daily PSI by region (top 10 by rape_bad) — Jan-Dec 2020"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-ggsave(here("outputs/plots/ts_psi_daily_top10_rape_bad_2020.png"), p_ts_2020, width = 10, height = 6, dpi = 300)
-p_ts_2020
 ```
 
-### 12.3 Ranking tables
+## Step 13 — Comparison and ranking tables
 
 ```{r ranking-tables}
-library(dplyr)
-library(here)
-
 dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
 
-stats_tbl <- read.csv(here("data_proc/tables/admin_pollination_stats.csv"), stringsAsFactors = FALSE)
-stats_tbl <- stats_tbl %>%
-  mutate(
-    region_id = as.character(NUTS_ID)
-  )
+admin_stats_tbl <- st_drop_geometry(admin_stats_3035)
 
-id_candidates <- c("region_id", "NUTS_ID", "NAME_LATN", "CNTR_CODE", "LEVL_CODE")
-id_cols <- id_candidates[id_candidates %in% names(stats_tbl)]
+ranking_rows <- list()
+for (cr in compare_crops) {
+  bad_col <- paste0("crop_bad_", cr)
+  suit_col <- paste0("crop_suit_", cr)
 
-top_rape_bad <- stats_tbl %>%
-  filter(is.finite(rape_bad)) %>%
-  arrange(desc(rape_bad)) %>%
-  slice_head(n = 10)
+  top_bad <- admin_stats_tbl %>%
+    filter(is.finite(.data[[bad_col]])) %>%
+    arrange(desc(.data[[bad_col]])) %>%
+    slice_head(n = 10) %>%
+    mutate(crop = cr, metric = "crop_bad", rank = row_number(), value = .data[[bad_col]])
 
-top_rape_suit <- stats_tbl %>%
-  filter(is.finite(rape_suit)) %>%
-  arrange(desc(rape_suit)) %>%
-  slice_head(n = 10)
+  top_suit <- admin_stats_tbl %>%
+    filter(is.finite(.data[[suit_col]])) %>%
+    arrange(desc(.data[[suit_col]])) %>%
+    slice_head(n = 10) %>%
+    mutate(crop = cr, metric = "crop_suit", rank = row_number(), value = .data[[suit_col]])
 
-top_psi_interannual_sd <- stats_tbl %>%
-  filter(is.finite(psi_interannual_sd)) %>%
-  arrange(desc(psi_interannual_sd)) %>%
-  slice_head(n = 10)
+  write.csv(top_bad, here("outputs/tables", sprintf("top10_%s_bad.csv", cr)), row.names = FALSE)
+  write.csv(top_suit, here("outputs/tables", sprintf("top10_%s_suit.csv", cr)), row.names = FALSE)
 
-write.csv(top_rape_bad, here("outputs/tables/top10_rape_bad.csv"), row.names = FALSE)
-write.csv(top_rape_suit, here("outputs/tables/top10_rape_suit.csv"), row.names = FALSE)
-write.csv(top_psi_interannual_sd, here("outputs/tables/top10_psi_interannual_sd.csv"), row.names = FALSE)
+  ranking_rows[[paste0(cr, "_bad")]] <- top_bad %>% select(crop, metric, rank, region_id, NUTS_ID, NAME_LATN, value)
+  ranking_rows[[paste0(cr, "_suit")]] <- top_suit %>% select(crop, metric, rank, region_id, NUTS_ID, NAME_LATN, value)
+}
 
-top_rape_bad %>% select(any_of(c(id_cols, "rape_bad")))
-top_rape_suit %>% select(any_of(c(id_cols, "rape_suit")))
-top_psi_interannual_sd %>% select(any_of(c(id_cols, "psi_interannual_sd")))
+crop_exposure_comparison <- bind_rows(ranking_rows)
+write.csv(crop_exposure_comparison, here("data_proc/tables/crop_exposure_comparison.csv"), row.names = FALSE)
+write.csv(crop_exposure_comparison, here("outputs/tables/crop_exposure_comparison.csv"), row.names = FALSE)
 ```

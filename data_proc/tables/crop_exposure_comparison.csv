@@ -1,0 +1,61 @@
+"crop","metric","rank","region_id","NUTS_ID","NAME_LATN","value"
+"rape","crop_bad",1,"DE80","DE80","Mecklenburg-Vorpommern",1.67919993400574
+"rape","crop_bad",2,"DED4","DED4","Chemnitz",1.41249740123749
+"rape","crop_bad",3,"DEF0","DEF0","Schleswig-Holstein",1.41004383563995
+"rape","crop_bad",4,"DEG0","DEG0","Thüringen",1.25056147575378
+"rape","crop_bad",5,"DEB2","DEB2","Trier",1.08404624462128
+"rape","crop_bad",6,"DED5","DED5","Leipzig",1.07145941257477
+"rape","crop_bad",7,"DED2","DED2","Dresden",0.956825792789459
+"rape","crop_bad",8,"DEE0","DEE0","Sachsen-Anhalt",0.914913177490234
+"rape","crop_bad",9,"DEB1","DEB1","Koblenz",0.907532870769501
+"rape","crop_bad",10,"DEB3","DEB3","Rheinhessen-Pfalz",0.779693961143494
+"rape","crop_suit",1,"DE80","DE80","Mecklenburg-Vorpommern",0.0242597013711929
+"rape","crop_suit",2,"DED5","DED5","Leipzig",0.022200021892786
+"rape","crop_suit",3,"DED4","DED4","Chemnitz",0.0194697305560112
+"rape","crop_suit",4,"DEG0","DEG0","Thüringen",0.0187606252729893
+"rape","crop_suit",5,"DEB3","DEB3","Rheinhessen-Pfalz",0.0186368096619844
+"rape","crop_suit",6,"DEE0","DEE0","Sachsen-Anhalt",0.0179282650351524
+"rape","crop_suit",7,"DED2","DED2","Dresden",0.0168328247964382
+"rape","crop_suit",8,"DEB2","DEB2","Trier",0.016658179461956
+"rape","crop_suit",9,"DEF0","DEF0","Schleswig-Holstein",0.0157308876514435
+"rape","crop_suit",10,"DEB1","DEB1","Koblenz",0.0153684671968222
+"temf","crop_bad",1,"NL41","NL41","Noord-Brabant",0.949419319629669
+"temf","crop_bad",2,"NL42","NL42","Limburg (NL)",0.819486081600189
+"temf","crop_bad",3,"NL22","NL22","Gelderland",0.611495018005371
+"temf","crop_bad",4,"DE14","DE14","Tübingen",0.547409772872925
+"temf","crop_bad",5,"DE60","DE60","Hamburg",0.429768204689026
+"temf","crop_bad",6,"DE11","DE11","Stuttgart",0.400605052709579
+"temf","crop_bad",7,"DE12","DE12","Karlsruhe",0.360742956399918
+"temf","crop_bad",8,"DE13","DE13","Freiburg",0.352998852729797
+"temf","crop_bad",9,"DEF0","DEF0","Schleswig-Holstein",0.339494049549103
+"temf","crop_bad",10,"DE91","DE91","Braunschweig",0.174769908189774
+"temf","crop_suit",1,"NL41","NL41","Noord-Brabant",0.0253257304430008
+"temf","crop_suit",2,"NL42","NL42","Limburg (NL)",0.0226314105093479
+"temf","crop_suit",3,"NL22","NL22","Gelderland",0.0142952343448997
+"temf","crop_suit",4,"DE11","DE11","Stuttgart",0.0106414705514908
+"temf","crop_suit",5,"DE14","DE14","Tübingen",0.0102766882628202
+"temf","crop_suit",6,"DE12","DE12","Karlsruhe",0.0100779151543975
+"temf","crop_suit",7,"DE13","DE13","Freiburg",0.00924490951001644
+"temf","crop_suit",8,"DE60","DE60","Hamburg",0.00764400186017156
+"temf","crop_suit",9,"DEB3","DEB3","Rheinhessen-Pfalz",0.00480858189985156
+"temf","crop_suit",10,"BE32","BE32","Prov. Hainaut",0.00468949181959033
+"sunf","crop_bad",1,"BE34","BE34","Prov. Luxembourg (BE)",0.0233768075704575
+"sunf","crop_bad",2,"DE40","DE40","Brandenburg",0.0178449973464012
+"sunf","crop_bad",3,"DEE0","DEE0","Sachsen-Anhalt",0.0124089764431119
+"sunf","crop_bad",4,"DE30","DE30","Berlin",0.011928834952414
+"sunf","crop_bad",5,"DEC0","DEC0","Saarland",0.00868882145732641
+"sunf","crop_bad",6,"DE21","DE21","Oberbayern",0.00720827933400869
+"sunf","crop_bad",7,"DE27","DE27","Schwaben",0.00698722340166569
+"sunf","crop_bad",8,"BE35","BE35","Prov. Namur",0.00685484707355499
+"sunf","crop_bad",9,"DED5","DED5","Leipzig",0.00674093887209892
+"sunf","crop_bad",10,"DE22","DE22","Niederbayern",0.00645293854176998
+"sunf","crop_suit",1,"BE34","BE34","Prov. Luxembourg (BE)",0.00245862756855786
+"sunf","crop_suit",2,"DE40","DE40","Brandenburg",0.00195308972615749
+"sunf","crop_suit",3,"DEE0","DEE0","Sachsen-Anhalt",0.0014043147675693
+"sunf","crop_suit",4,"DE30","DE30","Berlin",0.00124171900097281
+"sunf","crop_suit",5,"DEC0","DEC0","Saarland",0.000851414864882827
+"sunf","crop_suit",6,"DED5","DED5","Leipzig",0.000690762768499553
+"sunf","crop_suit",7,"DE25","DE25","Mittelfranken",0.000668014807160944
+"sunf","crop_suit",8,"BE35","BE35","Prov. Namur",0.000665837549604475
+"sunf","crop_suit",9,"DE26","DE26","Unterfranken",0.000605314446147531
+"sunf","crop_suit",10,"DE27","DE27","Schwaben",0.000588096096180379

@@ -1,0 +1,7 @@
+"crop","metric","moran_i","p_value","n_regions"
+"rape","crop_bad",0.525570850188853,0,61
+"rape","crop_suit",0.577500339548716,0,61
+"temf","crop_bad",0.292430215381928,0.002,61
+"temf","crop_suit",0.300974831685777,0.002,61
+"sunf","crop_bad",0.45785159516842,0,61
+"sunf","crop_suit",0.441543521427776,0,61
