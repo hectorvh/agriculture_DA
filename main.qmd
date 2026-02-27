@@ -292,17 +292,30 @@ n_years_mj <- length(unique(format(tg_dates[sel_mj], "%Y")))
 psi_days_mj_per_year <- psi_days_mj / n_years_mj
 psi_deficit_days_mj_per_year <- psi_deficit_days_mj / n_years_mj
 
-# Annual context window (full year)
-tg_yr <- tg_clip[[sel_yr]]
-rr_yr <- rr_clip[[sel_yr]]
-psi_daily_yr <- compute_daily_psi(tg_yr, rr_yr)
-time(psi_daily_yr) <- tg_dates[sel_yr]
-psi_mean_yr <- app(psi_daily_yr, mean, na.rm = TRUE)
-psi_days_yr <- app(psi_daily_yr, sum_or_na)
-psi_deficit_days_yr <- app(1 - psi_daily_yr, sum_or_na)
-n_years_yr <- length(unique(format(tg_dates[sel_yr], "%Y")))
+# Annual context window (full year) — computed year-by-year to avoid std::bad_alloc
+years_yr <- unique(format(tg_dates[sel_yr], "%Y"))
+mean_yr_list <- list()
+days_yr_list <- list()
+deficit_yr_list <- list()
+for (y in years_yr) {
+  idx_y <- which(format(tg_dates[sel_yr], "%Y") == y)
+  tg_y <- tg_clip[[sel_yr[idx_y]]]
+  rr_y <- rr_clip[[sel_yr[idx_y]]]
+  psi_y <- compute_daily_psi(tg_y, rr_y)
+  mean_yr_list[[y]] <- app(psi_y, mean, na.rm = TRUE)
+  days_yr_list[[y]] <- app(psi_y, sum_or_na)
+  deficit_yr_list[[y]] <- app(1 - psi_y, sum_or_na)
+  rm(tg_y, rr_y, psi_y)
+  gc()
+}
+psi_mean_yr <- mean(terra::rast(mean_yr_list))
+psi_days_yr <- sum(terra::rast(days_yr_list))
+psi_deficit_days_yr <- sum(terra::rast(deficit_yr_list))
+n_years_yr <- length(years_yr)
 psi_days_yr_per_year <- psi_days_yr / n_years_yr
 psi_deficit_days_yr_per_year <- psi_deficit_days_yr / n_years_yr
+rm(mean_yr_list, days_yr_list, deficit_yr_list)
+gc()
 
 writeRaster(psi_mean_mj, here("data_proc/rasters/psi_mean_marjun.tif"), overwrite = TRUE)
 writeRaster(psi_days_mj, here("data_proc/rasters/psi_days_marjun.tif"), overwrite = TRUE)
@@ -527,7 +540,7 @@ admin_stats<- admin_4326%>%
     sunf_frac = 0, sunf_suit = 0, sunf_bad = 0
   )) %>%
   mutate(
-    region_id = if ("NUTS_ID" %in% names(.)) as.character(NUTS_ID) else as.character(row_number())
+    region_id = as.character(NUTS_ID)
   )
 ```
 
@@ -669,7 +682,9 @@ library(sfdep)
 
 # 0) Create a stable ID (do this ONCE)
 admin_stats_3035 <- admin_stats_3035 %>%
-  mutate(region_id = row_number())
+  mutate(
+    region_id = if ("region_id" %in% names(.)) as.character(region_id) else if ("NUTS_ID" %in% names(.)) as.character(NUTS_ID) else as.character(row_number())
+  )
 
 # 1) Keep only finite values
 admin_ok <- admin_stats_3035 %>%
@@ -819,7 +834,7 @@ dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
 admin_ts <- st_transform(admin_debenl, crs(psi_daily))
 admin_labels <- st_drop_geometry(admin_ts) %>%
   mutate(
-    region_id = if ("NUTS_ID" %in% names(.)) as.character(NUTS_ID) else as.character(row_number())
+    region_id = as.character(NUTS_ID)
   )
 
 label_candidates <- c("NAME_LATN", "NUTS_NAME", "NAME_ENGL")
@@ -901,7 +916,12 @@ library(here)
 dir.create(here("outputs", "tables"), showWarnings = FALSE, recursive = TRUE)
 
 stats_tbl <- read.csv(here("data_proc/tables/admin_pollination_stats.csv"), stringsAsFactors = FALSE)
-id_candidates <- c("NUTS_ID", "NAME_LATN", "CNTR_CODE", "LEVL_CODE")
+stats_tbl <- stats_tbl %>%
+  mutate(
+    region_id = as.character(NUTS_ID)
+  )
+
+id_candidates <- c("region_id", "NUTS_ID", "NAME_LATN", "CNTR_CODE", "LEVL_CODE")
 id_cols <- id_candidates[id_candidates %in% names(stats_tbl)]
 
 top_rape_bad <- stats_tbl %>%
