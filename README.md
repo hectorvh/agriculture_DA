@@ -3,7 +3,7 @@
 Spatio-temporal analysis project for pollination-relevant climate and crop data. R stack: simple, fast, reliable. Study area: DE–BE–NL. Outputs: E-OBS–based suitability (PSI), SPAM crop fractions, zonal stats by NUTS region, and spatial autocorrelation (Moran’s I, LISA).
 
 ---
-Version 2
+Version 3
 
 ## Folder structure
 
