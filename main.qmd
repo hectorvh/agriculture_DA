@@ -2,7 +2,7 @@
 title: "Pollination Suitability Mapping for Crops"
 subtitle: "Germany, Belgium and the Netherlands | 2011-2022"
 author: "Hector Valdes Hurtado"
-date: "2026"
+date: "27 Feb 2026"
 course: "Analysis of Spatio-Temporal Data, Winter 2025/2026"
 affiliation: "Universitat Munster"
 format:
