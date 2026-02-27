@@ -421,9 +421,7 @@ for (cr in crop_windows$crop) {
 }
 
 crop_cols <- grep("^(crop_frac_|crop_suit_|crop_bad_)", names(admin_stats), value = TRUE)
-for (cc in crop_cols) {
-  admin_stats[[cc]][is.na(admin_stats[[cc]])] <- 0
-}
+for (cc in crop_cols) admin_stats[[cc]][is.na(admin_stats[[cc]])] <- 0
 ```
 
 ```{r admin-stats-save}
