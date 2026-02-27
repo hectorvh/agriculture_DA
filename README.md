@@ -2,16 +2,6 @@
 
 Spatio-temporal workflow for mapping pollination climate suitability and crop-weighted exposure across Germany, Belgium, and the Netherlands.
 
-## Personas
-
-### Lars Hoffmann (Regional Crop Insurance Analyst)
-Lars needs ranked regional exposure metrics for pollination-sensitive crops to support premium differentiation and portfolio risk management.  
-He also needs interannual stability signals to separate structural risk from one-off seasonal shocks.
-
-### Dr. Anneke Visser (Regional Agronomy Advisor)
-Anneke needs crop-window-specific suitability maps linked to crop presence to benchmark regions and prioritize field support.  
-She also needs hotspot detection to design cluster-based advisory campaigns across NL, BE, and western DE.
-
 ## Research Questions
 
 - Q1. Where is climate suitability for pollination highest and most stable during crop-specific bloom windows across DE-BE-NL?
