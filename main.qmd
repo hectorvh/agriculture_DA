@@ -259,8 +259,8 @@ Continuous PSI (0-1), then reused for baseline and crop-specific windows.
 
 ```{r psi-daily-full}
 compute_daily_psi <- function(tg_stack, rr_stack,
-                              t_zero_low = 8, t_opt_low = 12,
-                              t_opt_high = 25, t_zero_high = 30,
+                              t_zero_low = 10, t_opt_low = 19,
+                              t_opt_high = 30, t_zero_high = 40,
                               rr_opt = 1, rr_zero = 5) {
   temp_score <- ifel(
     is.na(tg_stack), NA,
@@ -392,12 +392,11 @@ for (cr in names(crop_frac)) {
 ```{r admin-stats}
 admin_4326 <- st_transform(admin_debenl, crs(template_r))
 admin_stats <- admin_4326 %>%
-  mutate(
-    region_id = as.character(NUTS_ID),
-    psi_mean_am = exact_extract(baseline_summary$mean, ., "mean"),
-    psi_equiv_days_per_year_am = exact_extract(baseline_summary$equiv_days_per_year, ., "mean"),
-    psi_interannual_sd_am = exact_extract(baseline_summary$interannual_sd, ., "mean")
-  )
+  mutate(region_id = as.character(NUTS_ID))
+
+admin_stats$psi_mean_am <- exact_extract(baseline_summary$mean, admin_stats, "mean")
+admin_stats$psi_equiv_days_per_year_am <- exact_extract(baseline_summary$equiv_days_per_year, admin_stats, "mean")
+admin_stats$psi_interannual_sd_am <- exact_extract(baseline_summary$interannual_sd, admin_stats, "mean")
 
 for (cr in crop_windows$crop) {
   admin_stats[[paste0("psi_mean_", cr)]] <- exact_extract(crop_psi[[cr]]$mean, admin_stats, "mean")
@@ -468,36 +467,46 @@ for (cr in compare_crops) {
   nb_ok <- st_contiguity(sf_ok)
   keep <- lengths(nb_ok) > 0
   sf_ok <- sf_ok[keep, ]
+  if (nrow(sf_ok) < 3) {
+    next
+  }
   nb_ok <- st_contiguity(sf_ok)
   lw_ok <- st_weights(nb_ok, style = "W")
   lisa <- local_moran(sf_ok$value, nb_ok, lw_ok)
   lisa_tbl <- as_tibble(lisa)
 
-  sf_ok <- sf_ok %>%
-    bind_cols(lisa_tbl) %>%
-    mutate(
-      tmp_i = ii,
-      tmp_p = p_ii
-    )
-
-  if ("mean" %in% names(sf_ok)) {
-    sf_ok <- sf_ok %>% mutate(tmp_cl = as.character(mean))
-  } else if ("cluster" %in% names(sf_ok)) {
-    sf_ok <- sf_ok %>% mutate(tmp_cl = as.character(cluster))
+  if ("cluster" %in% names(lisa_tbl)) {
+    cl <- as.character(lisa_tbl$cluster)
+  } else if ("mean" %in% names(lisa_tbl)) {
+    cl <- as.character(lisa_tbl$mean)
   } else {
-    sf_ok <- sf_ok %>% mutate(tmp_cl = NA_character_)
+    # Fallback cluster labels when sfdep doesn't expose cluster classes:
+    # classify quadrants using standardized value and standardized spatial lag.
+    z <- as.numeric(scale(sf_ok$value))
+    lw_spdep <- spdep::nb2listw(nb_ok, style = "W", zero.policy = TRUE)
+    lag_z <- as.numeric(scale(spdep::lag.listw(lw_spdep, z, zero.policy = TRUE)))
+    cl <- dplyr::case_when(
+      z >= 0 & lag_z >= 0 ~ "High-High",
+      z >= 0 & lag_z <  0 ~ "High-Low",
+      z <  0 & lag_z >= 0 ~ "Low-High",
+      z <  0 & lag_z <  0 ~ "Low-Low",
+      TRUE ~ NA_character_
+    )
   }
 
   sf_ok <- sf_ok %>%
-    mutate(
-      tmp_sig = case_when(
-        is.na(tmp_p) ~ NA_character_,
-        tmp_p <= 0.05 ~ tmp_cl,
-        TRUE ~ "Not significant"
-      )
-    ) %>%
     st_drop_geometry() %>%
-    select(region_id, tmp_i, tmp_p, tmp_cl, tmp_sig)
+    transmute(
+      region_id,
+      tmp_i = lisa_tbl$ii,
+      tmp_p = lisa_tbl$p_ii,
+      tmp_cl = as.character(cl),
+      tmp_sig = ifelse(
+        is.na(tmp_p),
+        NA_character_,
+        ifelse(tmp_p <= 0.05, tmp_cl, "Not significant")
+      )
+    )
 
   admin_stats_3035 <- admin_stats_3035 %>%
     left_join(sf_ok, by = "region_id") %>%
@@ -537,11 +546,14 @@ plot_and_save_raster(baseline_summary$interannual_sd, "Interannual PSI SD (Apr-M
 
 # Crop-specific maps
 for (cr in compare_crops) {
-  plot_and_save_raster(crop_psi[[cr]]$mean, sprintf("PSI mean (%s window)", cr), here("outputs/maps", sprintf("map_psi_mean_%s.png", cr)), admin_borders, admin_lvl0_borders)
-  plot_and_save_raster(crop_psi[[cr]]$equiv_days_per_year, sprintf("Equivalent suitable days/year (%s window)", cr), here("outputs/maps", sprintf("map_psi_equiv_days_per_year_%s.png", cr)), admin_borders, admin_lvl0_borders)
-  plot_and_save_raster(crop_frac[[cr]], sprintf("Crop fraction (%s)", cr), here("outputs/maps", sprintf("map_crop_frac_%s.png", cr)), admin_borders, admin_lvl0_borders)
-  plot_and_save_raster(crop_suit[[cr]], sprintf("Crop-weighted suitability (%s)", cr), here("outputs/maps", sprintf("map_crop_suit_%s.png", cr)), admin_borders, admin_lvl0_borders)
-  plot_and_save_raster(crop_bad[[cr]], sprintf("Crop-weighted deficit exposure (%s)", cr), here("outputs/maps", sprintf("map_crop_bad_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  wrow <- crop_windows %>% filter(crop == cr)
+  window_label <- sprintf("%s: %s to %s", cr, wrow$start_mmdd[1], wrow$end_mmdd[1])
+
+  plot_and_save_raster(crop_psi[[cr]]$mean, sprintf("PSI mean (%s)", window_label), here("outputs/maps", sprintf("map_psi_mean_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_psi[[cr]]$equiv_days_per_year, sprintf("Equivalent suitable days/year (%s)", window_label), here("outputs/maps", sprintf("map_psi_equiv_days_per_year_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_frac[[cr]], sprintf("Crop fraction (%s)", window_label), here("outputs/maps", sprintf("map_crop_frac_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_suit[[cr]], sprintf("Crop-weighted suitability (%s)", window_label), here("outputs/maps", sprintf("map_crop_suit_%s.png", cr)), admin_borders, admin_lvl0_borders)
+  plot_and_save_raster(crop_bad[[cr]], sprintf("Crop-weighted deficit exposure (%s)", window_label), here("outputs/maps", sprintf("map_crop_bad_%s.png", cr)), admin_borders, admin_lvl0_borders)
 
   lisa_col <- paste0("lisa_sig_crop_bad_", cr)
   if (lisa_col %in% names(admin_stats_3035)) {
@@ -559,26 +571,25 @@ for (cr in compare_crops) {
 library(ggplot2)
 
 dir.create(here("outputs", "plots"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here("data_proc", "tables"), showWarnings = FALSE, recursive = TRUE)
 
 admin_stats_tbl <- st_drop_geometry(admin_stats_3035)
+psi_region_day_full <- build_region_day_table(psi_daily_full, dates_full, admin_debenl) %>%
+  mutate(
+    region_id = as.character(region_id),
+    region_label = as.character(region_label),
+    date = as.Date(date),
+    psi_daily_mean = as.numeric(psi_daily_mean)
+  )
+write.csv(psi_region_day_full, here("data_proc/tables/psi_region_day_full.csv"), row.names = FALSE)
 
 for (i in seq_len(nrow(crop_windows))) {
   cr <- crop_windows$crop[i]
   st_mmdd <- crop_windows$start_mmdd[i]
   en_mmdd <- crop_windows$end_mmdd[i]
 
-  sel_crop <- select_window_by_mmdd(dates_full, st_mmdd, en_mmdd)
-  dates_crop <- dates_full[sel_crop]
-  psi_crop_daily <- psi_daily_full[[which(sel_crop)]]
-  time(psi_crop_daily) <- dates_crop
-
-  psi_region_day <- build_region_day_table(psi_crop_daily, dates_crop, admin_debenl) %>%
-    mutate(
-      region_id = as.character(region_id),
-      region_label = as.character(region_label),
-      date = as.Date(date),
-      psi_daily_mean = as.numeric(psi_daily_mean)
-    )
+  psi_region_day <- psi_region_day_full %>%
+    filter(select_window_by_mmdd(date, st_mmdd, en_mmdd))
 
   write.csv(psi_region_day, here("data_proc/tables", sprintf("psi_region_day_%s.csv", cr)), row.names = FALSE)
 
